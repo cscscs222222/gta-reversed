@@ -7,6 +7,10 @@
 #include "TaskSimpleUseGun.h"
 #include <extensions/utility.hpp>
 
+static bool IsAttackingPlayer(const CPed* ped, const CPed* target) {
+    return target && target->IsPlayer() && !ped->IsPlayer();
+}
+
 void CTaskComplexKillPedOnFootArmed::InjectHooks() {
     RH_ScopedVirtualClass(CTaskComplexKillPedOnFootArmed, 0x86d918, 11);
     RH_ScopedCategory("Tasks/TaskTypes");
@@ -69,15 +73,19 @@ bool CTaskComplexKillPedOnFootArmed::LineOfSightClearForAttack(CPed* ped) { // p
     * nothing special, but it's messy, and it's late, so I won't bother
     */
     const auto reqDistDeltaSq = sq(2.f);
-    const auto reqTimeDelta   = 5000;
+    const auto attackingPlayer = IsAttackingPlayer(ped, m_target);
+    const auto now = CTimer::GetTimeInMS();
+    const auto wasCheckedRecently = [attackingPlayer, now](uint32 checkedAt, uint32 maxAgeMs) {
+        return (!attackingPlayer || checkedAt != 0) && now - checkedAt < maxAgeMs;
+    };
 
     //> If the LOS was recently clear, let's consider it still is
-    if (CTimer::GetTimeInMS() - m_losClearTime < reqTimeDelta) {
+    if (wasCheckedRecently(m_losClearTime, attackingPlayer ? 350u : 5000u)) {
         return true;
     }
 
     //> Perhaps check if the entities are still kinda around the same position as the last time the LOS was blocked...
-    if (CTimer::GetTimeInMS() - m_losBlockedTime < reqTimeDelta) {
+    if (wasCheckedRecently(m_losBlockedTime, attackingPlayer ? 750u : 5000u)) {
         if (reqDistDeltaSq >= (m_target->GetPosition() - m_losBlockedTargetPos).SquaredMagnitude()) {
             if (reqDistDeltaSq >= (ped->GetPosition() - m_losBlockedOurPos).SquaredMagnitude()) {
                 return false;
@@ -254,8 +262,9 @@ CTask* CTaskComplexKillPedOnFootArmed::CreateFirstSubTask(CPed* ped) {
 
     return CreateSubTask([&, this] {
         const auto& ourActiveWep = ped->GetActiveWeapon().GetWeaponInfo(ped);
+        const auto initialAttackRange = ourActiveWep.m_fTargetRange * (IsAttackingPlayer(ped, m_target) ? 0.45f : 0.25f);
 
-        if (targetToOurPedDistSq <= sq(ourActiveWep.m_fTargetRange / 4.f) && LineOfSightClearForAttack(ped)) {
+        if (targetToOurPedDistSq <= sq(initialAttackRange) && LineOfSightClearForAttack(ped)) {
             return TASK_SIMPLE_GUN_CTRL;
         }
 
@@ -286,6 +295,9 @@ CTask* CTaskComplexKillPedOnFootArmed::ControlSubTask(CPed* ped) {
                &targetPos = m_target->GetPosition();
 
     const auto targetToOurPedDistSq = (ourPos - targetPos).SquaredMagnitude();
+    const auto attackingPlayer = IsAttackingPlayer(ped, m_target);
+    const auto baseDuckChance = static_cast<float>(m_duckChancePerc);
+    const auto duckChance = attackingPlayer ? std::min(baseDuckChance * 1.5f, 100.f) : baseDuckChance;
 
     //> 0x62CD55
     if (   (m_duckingConditions & 4) == 0
@@ -294,7 +306,7 @@ CTask* CTaskComplexKillPedOnFootArmed::ControlSubTask(CPed* ped) {
     ) {
         if (   m_duckingConditions & 1
             && m_bShotFiredByPlayer
-            && CGeneral::RandomBool((float)m_duckChancePerc)
+            && CGeneral::RandomBool(duckChance)
         ) {
             if (const auto quack = ped->GetIntelligence()->GetTaskDuck()) {
                 quack->SetDuckTimer((uint16)m_lengthOfDuck);
@@ -306,7 +318,7 @@ CTask* CTaskComplexKillPedOnFootArmed::ControlSubTask(CPed* ped) {
             }
         }
     } else {
-        if (CGeneral::RandomBool((float)m_duckChancePerc)) {
+        if (CGeneral::RandomBool(duckChance)) {
             if (targetToOurPedDistSq <= sq(20.f)) {
                 ped->GetIntelligence()->SetTaskDuckSecondary((uint16)m_lengthOfDuck);
             }
@@ -326,6 +338,9 @@ CTask* CTaskComplexKillPedOnFootArmed::ControlSubTask(CPed* ped) {
     }
 
     const auto& ourwi = ped->GetActiveWeapon().GetWeaponInfo(ped);
+    const auto engageRange = ourwi.m_fTargetRange * (attackingPlayer ? 0.65f : 0.5f);
+    const auto holdRange = ourwi.m_fTargetRange * (attackingPlayer ? 0.75f : 0.5f);
+    const auto attackDelayMs = attackingPlayer ? 950u : 2000u;
     switch (m_pSubTask->GetTaskType()) { //> 0x62CE7E
     case TASK_COMPLEX_SEEK_ENTITY: {
         if ([&, this]{
@@ -337,8 +352,8 @@ CTask* CTaskComplexKillPedOnFootArmed::ControlSubTask(CPed* ped) {
             }
             if (ped->bStayInSamePlace) {
                 return LineOfSightClearForAttack(ped);
-            } else if (sq(ourwi.m_fTargetRange / 2.f) >= targetToOurPedDistSq) {
-                if (CTimer::GetTimeInMS() - m_lastAttackTime >= 2000 || m_target->GetMoveSpeed().Dot(ped->GetForward()) < 0.f) {
+            } else if (sq(engageRange) >= targetToOurPedDistSq) {
+                if (CTimer::GetTimeInMS() - m_lastAttackTime >= attackDelayMs || m_target->GetMoveSpeed().Dot(ped->GetForward()) < 0.f) {
                     return LineOfSightClearForAttack(ped);
                 }
             }
@@ -354,7 +369,7 @@ CTask* CTaskComplexKillPedOnFootArmed::ControlSubTask(CPed* ped) {
     }
     case TASK_SIMPLE_GUN_CTRL: { //> 0x62CE87
         if (   targetToOurPedDistSq >= sq(ourwi.m_fTargetRange)
-            || targetToOurPedDistSq >= sq(ourwi.m_fTargetRange / 2.f) && !ped->bStayInSamePlace && CTimer::GetTimeInMS() - m_lastAttackTime >= 2000
+            || targetToOurPedDistSq >= sq(holdRange) && !ped->bStayInSamePlace && CTimer::GetTimeInMS() - m_lastAttackTime >= attackDelayMs
             || targetToOurPedDistSq >= sq(4.f) && !ped->bStayInSamePlace && CTimer::GetTimeInMS() >= m_shootTimer
             || !LineOfSightClearForAttack(ped)
         ) {

@@ -132,6 +132,9 @@ bool CTaskSimpleGunControl::ProcessPed(CPed* ped) {
         }
         return *useGunTask->m_WeaponInfo;
     }();
+    const auto pressuringPlayer = winfo.m_nWeaponFire == eWeaponFire::WEAPON_FIRE_INSTANT_HIT
+        && m_targetEntity && m_targetEntity->GetIsTypePed() && m_targetEntity->AsPed()->IsPlayer()
+        && !ped->IsPlayer();
 
     // Play gunstand animation if necessary
     if ([&, this]{
@@ -191,7 +194,10 @@ bool CTaskSimpleGunControl::ProcessPed(CPed* ped) {
             m_burstAmmoCnt = winfo.m_nAmmoClip;
             if (m_burstAmmoCnt > 1) {
                 if (ped->m_nWeaponShootingRate < 100u) {
-                    m_burstAmmoCnt = std::min((int16)(4 * ped->m_nWeaponShootingRate / 30), m_burstAmmoCnt);
+                    const auto burstRate = pressuringPlayer
+                        ? std::min(ped->m_nWeaponShootingRate * 5 / 4, 99)
+                        : ped->m_nWeaponShootingRate;
+                    m_burstAmmoCnt = std::min(static_cast<int16>(4 * burstRate / 30), m_burstAmmoCnt);
                     m_burstAmmoCnt = std::max(m_burstAmmoCnt - CGeneral::GetRandomNumberInRange(0, 2), 1);
                 }
             }
@@ -259,6 +265,9 @@ bool CTaskSimpleGunControl::ProcessPed(CPed* ped) {
 
         period *= CGeneral::GetRandomNumberInRange(0.75f, 1.25f);
         period /= (float)ped->m_nWeaponShootingRate * m_attackIntervalMult * 0.04f;
+        if (pressuringPlayer) {
+            period *= 0.65f;
+        }
 
         m_nextAtkTimeMs = CTimer::GetTimeInMS() + (uint32)period;
     }
