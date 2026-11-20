@@ -143,6 +143,61 @@ void TestCrashScenes() {
     Check(ulw::TrafficLimit(input) == 0, "crash scene must preserve the red-light stop");
 }
 
+void TestAirSupportAndRoadblocks() {
+    using ulw::PatrolMode;
+    using ulw::SearchPhase;
+    constexpr std::uint32_t heli = 0xc0000101;
+    constexpr ulw::Point building{32, 45, 5}, helicopter{36, 46, 70}, forward{0, 1, 0};
+    ulw::PoliceSearch police;
+    police.Observe(0x201, 1000, building, building, true);
+    Check(police.Target(heli, 1100, helicopter, PatrolMode::Air).phase == SearchPhase::Respond,
+        "air patrol should receive a sighting below its flight altitude");
+    const auto sweep = police.Target(heli, 3400, helicopter, PatrolMode::Air);
+    Check(sweep.phase == SearchPhase::Search && ulw::DistanceSquared(sweep.point, building) == 34 * 34,
+        "the air patrol should start a wider search when it is above the last sighting");
+    police.Observe(heli, 3600, helicopter, building, true, PatrolMode::Air);
+    police.Observe(heli, 3820, helicopter, {60, 80, 2}, false, PatrolMode::Air);
+    Check(police.Target(0x301, 3900, building).phase == SearchPhase::Respond,
+        "ground patrol should receive a report from the helicopter");
+    const auto airborneSearch = police.Target(heli, 3900, helicopter, PatrolMode::Air);
+    Check(airborneSearch.phase == SearchPhase::LastSeen && airborneSearch.point.y == building.y,
+        "a concealed target must not refresh the helicopter report");
+    const auto holding = ulw::AirSearchPoint({SearchPhase::Lost, {200, 200, 200}}, helicopter, forward, 5);
+    Check(holding.x == helicopter.x && holding.y == helicopter.y + 28 && holding.z == 5,
+        "lost aircraft contact should keep searching without steering to hidden coordinates");
+    const auto aim = ulw::AirSearchPoint(sweep, helicopter, forward, 10);
+    Check(ulw::DistanceSquared(aim, sweep.point) == 0 && !ulw::HasSearchContact(SearchPhase::Lost),
+        "a searchlight should use the sweep point only while a report is active");
+    Check(police.HasRecentReport({100, 45, 5}, 4000), "roadblocks should see nearby flight reports");
+    Check(!police.HasRecentReport({100, 45, 25}, 4000) && !police.HasRecentReport({100, 45, 5}, 7800),
+        "roadblocks should reject sightings at the wrong elevation or after expiry");
+
+    ulw::RoadblockCandidate site{{0, 64, 0}, {}, 15, 0.05f, 4, 2, false, true, true, true};
+    Check(ulw::SuitableRoadblock(site), "a wide, nearby road with a fresh sighting should be eligible");
+    site.recentlySeen = false;
+    Check(!ulw::SuitableRoadblock(site), "a roadblock should require recent observation while patrol scanning is enabled");
+    site.sightingRequired = false;
+    Check(ulw::SuitableRoadblock(site), "roadblock placement should work with the search modules turned off");
+    site.speedSquared = 1.0f;
+    Check(!ulw::SuitableRoadblock(site), "a fast chase needs more warning distance");
+    site.road.y = 75;
+    Check(ulw::SuitableRoadblock(site), "a fast chase should allow a distant roadblock");
+    site.road.z = 10;
+    Check(!ulw::SuitableRoadblock(site), "elevated roads need a separate search");
+    site.road.z = 0;
+    site.width = 8;
+    Check(!ulw::SuitableRoadblock(site), "a narrow road is not safe for native placement");
+    Check(ulw::InCameraCone({}, forward, site.road) && !ulw::InCameraCone({}, {0, -1, 0}, site.road),
+        "candidate approach should distinguish where the camera points");
+    ulw::RoadblockAttempts attempts;
+    Check(attempts.Ready(0, 4), "the first roadblock should be eligible");
+    attempts.Record(1000);
+    Check(!attempts.Ready(11999, 5) && attempts.Ready(12000, 5) && !attempts.Ready(12000, 4),
+        "roadblock retry timing should depend on wanted level");
+    attempts.Reset();
+    Check(attempts.Ready(1200, 4), "roadblock attempts should reset between searches");
+}
+
 void TestTrafficAndPhysics() {
     ulw::TrafficInput input{40, 30, 0, 0, 12, 505, false, false};
     const auto dry = ulw::TrafficLimit(input);
@@ -245,6 +300,8 @@ int wmain(int argc, wchar_t** argv) {
         TestCrashScenes();
         TestTrafficAndPhysics();
         std::puts("Street systems: police search and reports, traffic limits, wet grip and brake fade passed.");
+        TestAirSupportAndRoadblocks();
+        std::puts("Police support: air and ground reports, search routes and roadblock placement passed.");
         TestCombat();
         std::puts("Combat: aiming profiles, injury, weather and native accuracy limits passed.");
         TestCityActivity();

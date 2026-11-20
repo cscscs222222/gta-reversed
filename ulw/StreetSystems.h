@@ -8,7 +8,7 @@ float DistanceSquared(Point a, Point b) noexcept;
 float SightRange(float wet, float fog, unsigned hour) noexcept;
 
 enum class SearchPhase : std::uint8_t { Observe, Pursue, LastSeen, Respond, Search, Lost };
-enum class PatrolMode : std::uint8_t { Foot, Car };
+enum class PatrolMode : std::uint8_t { Foot, Car, Air };
 
 struct SearchTarget {
     SearchPhase phase;
@@ -18,9 +18,11 @@ struct SearchTarget {
 class PoliceSearch {
 public:
     bool ShouldSample(std::uint32_t officer, std::uint32_t now, std::uint32_t frame) noexcept;
-    void Observe(std::uint32_t officer, std::uint32_t now, Point officerPosition, Point point, bool visible) noexcept;
+    void Observe(std::uint32_t officer, std::uint32_t now, Point officerPosition, Point point, bool visible,
+        PatrolMode mode = PatrolMode::Foot) noexcept;
     SearchTarget Target(std::uint32_t officer, std::uint32_t now, Point officerPosition,
         PatrolMode mode = PatrolMode::Foot) const noexcept;
+    bool HasRecentReport(Point position, std::uint32_t now) const noexcept;
     void Reset() noexcept;
 
 private:
@@ -44,6 +46,36 @@ private:
     std::array<Report, 16> m_Reports{};
     std::uint32_t m_Frame{};
     unsigned m_Casts{};
+};
+
+bool HasSearchContact(SearchPhase phase) noexcept;
+Point AirSearchPoint(SearchTarget target, Point helicopter, Point forward, float flightReferenceZ) noexcept;
+
+struct RoadblockCandidate {
+    Point road;
+    Point player;
+    float width;
+    float speedSquared;
+    unsigned wanted;
+    unsigned links;
+    bool highway;
+    bool activeRoad;
+    bool sightingRequired;
+    bool recentlySeen;
+};
+
+bool SuitableRoadblock(const RoadblockCandidate& candidate) noexcept;
+bool InCameraCone(Point camera, Point forward, Point target) noexcept;
+
+class RoadblockAttempts {
+public:
+    bool Ready(std::uint32_t now, unsigned wanted) const noexcept;
+    void Record(std::uint32_t now) noexcept;
+    void Reset() noexcept;
+
+private:
+    std::uint32_t m_Last{};
+    bool m_HasAttempt{};
 };
 
 struct TrafficInput {

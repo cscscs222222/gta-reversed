@@ -28,6 +28,8 @@ constexpr std::uintptr_t NativeFireResponse = 0x4BBFB0;
 constexpr std::uintptr_t PedPool = 0xB74490;
 constexpr std::uintptr_t TaskPool = 0xB744A8;
 constexpr std::uintptr_t VehiclePool = 0xB74494;
+constexpr std::uintptr_t PoliceHelicopters = 0xC1C964;
+constexpr std::uintptr_t ActiveCamera = 0xB6F028;
 constexpr std::uintptr_t ScriptSpace = 0xA49960;
 constexpr std::uintptr_t MissionFlagOffset = 0xA476AC;
 constexpr std::size_t MainScriptLimit = 200000;
@@ -42,6 +44,11 @@ using SeekPoint = ulw::Point*(__thiscall*)(void*, ulw::Point*, const void*);
 using WantedPointer = const void*(__cdecl*)(int);
 using TrafficSpeed = float(__cdecl*)(void*);
 using CarAI = void(__cdecl*)(void*);
+using FlyHelicopter = void(__cdecl*)(void*, float, float, bool);
+using HeadingForOffset = float(__cdecl*)(float, float);
+using AddSearchLight = void(__cdecl*)(const ulw::Point&, const ulw::Point&, float, float, std::uint32_t, std::uint8_t, std::uint8_t);
+using RoadblockNodeInfo = bool(__cdecl*)(std::uint32_t, float*, ulw::Point*);
+using PlayerVehicle = const void*(__cdecl*)(int, bool);
 using ChaseNode = bool(__cdecl*)(void*, float, float, float, const void*);
 using BlockSteering = void(__cdecl*)(void*, const void*, float, float, float, float, float*, float*, float*, bool*);
 using PopulationUpdate = void(__cdecl*)(bool);
@@ -53,6 +60,7 @@ using ProcessWheel = void(__thiscall*)(void*, void*, void*, void*, void*, int, f
 
 ulw::IntelligenceCore s_Core{};
 ulw::PoliceSearch s_Police{};
+ulw::RoadblockAttempts s_Roadblocks{};
 ulw::CrashScenes s_Crashes{};
 ulw::RoadPhysics s_RoadPhysics{};
 struct EmergencyCar {
@@ -63,6 +71,13 @@ struct EmergencyCar {
     bool active;
 };
 std::array<EmergencyCar, 16> s_Sirens{};
+struct AirObservation {
+    std::uint32_t id{};
+    std::uint32_t at{};
+    ulw::SearchTarget search{};
+    bool observed{};
+};
+std::array<AirObservation, 2> s_AirPatrols{};
 std::filesystem::path s_LogPath;
 std::array<unsigned, 4> s_Reactions{};
 std::array<unsigned, 6> s_SearchStages{};
@@ -71,12 +86,15 @@ unsigned s_YieldingDrivers{};
 unsigned s_CrashSlowdowns{};
 unsigned s_PatrolRoutes{};
 unsigned s_AttractorUses{};
+unsigned s_AirSearches{};
+unsigned s_RoadblockAttempts{};
 unsigned s_AllocationFailures{};
 std::uint32_t s_LastLogTime{};
 std::uint32_t s_LastGameTime{};
 bool s_Diagnostics{};
 bool s_WasActive{};
 bool s_StreetActive{};
+bool s_UseSightingForRoadblocks{};
 std::uint32_t s_StreetTime{};
 
 template<typename T>
@@ -116,14 +134,14 @@ void LogActivity(std::uint32_t now) noexcept {
         return;
     }
     using ulw::SearchPhase;
-    char message[320]{};
+    char message[384]{};
     std::snprintf(message, sizeof(message),
-        "Look=%u Flee=%u Panic=%u taskPoolFailures=%u pursuitUpdates=%u reportUpdates=%u searchUpdates=%u patrolRoutes=%u limitedSpeedCalls=%u sirenSpeedCalls=%u crashSpeedCalls=%u attractorUses=%u",
+        "Look=%u Flee=%u Panic=%u taskPoolFailures=%u pursuitUpdates=%u reportUpdates=%u searchUpdates=%u patrolRoutes=%u airSearches=%u roadblockAttempts=%u limitedSpeedCalls=%u sirenSpeedCalls=%u crashSpeedCalls=%u attractorUses=%u",
         s_Reactions[1], s_Reactions[2], s_Reactions[3], s_AllocationFailures,
         s_SearchStages[static_cast<unsigned>(SearchPhase::Pursue)],
         s_SearchStages[static_cast<unsigned>(SearchPhase::Respond)],
         s_SearchStages[static_cast<unsigned>(SearchPhase::Search)],
-        s_PatrolRoutes, s_RestrictedDrivers, s_YieldingDrivers, s_CrashSlowdowns, s_AttractorUses);
+        s_PatrolRoutes, s_AirSearches, s_RoadblockAttempts, s_RestrictedDrivers, s_YieldingDrivers, s_CrashSlowdowns, s_AttractorUses);
     Log(message);
     s_LastLogTime = now;
 }
@@ -185,6 +203,8 @@ bool StreetActive(std::uint32_t now) noexcept {
     const auto active = FreeRoam();
     if ((s_StreetActive && !active) || now < s_StreetTime) {
         s_Police.Reset();
+        s_Roadblocks.Reset();
+        s_AirPatrols = {};
         s_RoadPhysics.Reset();
         s_Crashes.Reset();
         s_Sirens = {};
@@ -297,31 +317,35 @@ bool __fastcall OnWeaponFire(void* weapon, void*, void* ped, const void* start, 
     return fired;
 }
 
-bool PoliceCanPursue() noexcept {
+unsigned ActiveWantedLevel() noexcept {
     const auto* const wanted = GameFunction<WantedPointer>(0x56E230)(0);
-    if (!wanted || (Read<std::uint8_t>(wanted, 0x1E) & 7) || !Read<std::uint32_t>(wanted, 0x2C)) {
+    const auto level = wanted && !(Read<std::uint8_t>(wanted, 0x1E) & 7) ? Read<std::uint32_t>(wanted, 0x2C) : 0u;
+    if (!level) {
         s_Police.Reset();
-        return false;
+        s_AirPatrols = {};
+        s_Roadblocks.Reset();
     }
-    return true;
+    return level;
 }
 
 ulw::SearchTarget SearchForPlayer(const void* observer, ulw::Point origin, ulw::Point player,
     std::uint32_t id, std::uint32_t now, ulw::PatrolMode mode) noexcept {
     if (s_Police.ShouldSample(id, now, GameValue<std::uint32_t>(0xB7CB4C))) {
         const bool driving = mode == ulw::PatrolMode::Car;
-        const auto range = ulw::SightRange(GameValue<float>(0xC81308), Fog(), GameValue<std::uint8_t>(0xB70153));
+        const bool airborne = mode == ulw::PatrolMode::Air;
+        const auto range = ulw::SightRange(GameValue<float>(0xC81308), Fog(), GameValue<std::uint8_t>(0xB70153)) *
+            (airborne ? 2.45f : 1.0f);
         const auto distance = ulw::DistanceSquared(origin, player);
         const auto forward = EntityForward(observer);
         const auto dot = forward.x * (player.x - origin.x) + forward.y * (player.y - origin.y);
-        const bool facing = distance < 81.0f || (dot > 0.0f && dot * dot >= 0.22f * distance);
+        const bool facing = airborne || distance < 81.0f || (dot > 0.0f && dot * dot >= 0.22f * distance);
         auto eye = origin;
-        eye.z += driving ? 1.3f : 0.65f;
+        eye.z += airborne ? -1.3f : driving ? 1.3f : 0.65f;
         auto target = player;
         target.z += 0.7f;
         const bool visible = distance <= range * range && facing &&
-            GameFunction<LineClear>(0x56A490)(eye, target, true, true, false, true, true, false, false);
-        s_Police.Observe(id, now, origin, player, visible);
+            GameFunction<LineClear>(0x56A490)(eye, target, true, !airborne, false, true, true, false, false);
+        s_Police.Observe(id, now, origin, player, visible, mode);
     }
     const auto search = s_Police.Target(id, now, origin, mode);
     ++s_SearchStages[static_cast<unsigned>(search.phase)];
@@ -341,7 +365,7 @@ ulw::Point* __fastcall OnSeek(void* task, void*, ulw::Point* result, const void*
         !(Read<float>(player, 0x540) > 0.0f)) {
         return native;
     }
-    if (!PoliceCanPursue()) {
+    if (!ActiveWantedLevel()) {
         return native;
     }
     const auto reference = GameFunction<PedReference>(0x54FF60)(officer);
@@ -364,7 +388,7 @@ bool PatrolReference(const void* car, std::uint32_t now, std::uint32_t& id) noex
         return false;
     }
     const auto* const driver = Read<const void*>(car, 0x460);
-    if (!driver || Read<std::uint32_t>(driver, 0x598) != 6 || !PoliceCanPursue()) {
+    if (!driver || Read<std::uint32_t>(driver, 0x598) != 6 || !ActiveWantedLevel()) {
         return false;
     }
     const auto reference = GameFunction<PedReference>(0x54FFC0)(car);
@@ -418,6 +442,126 @@ void __cdecl OnBlockSteering(void* car, const void* target, float x, float y, fl
         }
     }
     GameFunction<BlockSteering>(0x4335E0)(car, target, x, y, vx, vy, steer, gas, brake, handbrake);
+}
+
+std::uint32_t AirPatrolId(const void* heli) noexcept {
+    if (!heli || Read<std::uint16_t>(heli, 0x22) != 497 || Read<std::uint8_t>(heli, 0x3BA) != 40 ||
+        !GameValue<void*>(VehiclePool)) {
+        return 0;
+    }
+    const auto reference = GameFunction<PedReference>(0x54FFC0)(heli);
+    return reference >= 0 && !(reference & 0x80) ? static_cast<std::uint32_t>(reference) | 0xc0000000u : 0;
+}
+
+void __cdecl OnPoliceHeliFlight(void* heli, float heading, float distance, bool policeFlight) noexcept {
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    if (policeFlight && StreetActive(now) && GameValue<std::int32_t>(0xB72914) == 0) {
+        for (std::size_t slot = 0; slot < s_AirPatrols.size(); ++slot) {
+            const auto* const spawned = GameValue<const void*>(PoliceHelicopters + slot * sizeof(void*));
+            if (heli != spawned) {
+                continue;
+            }
+            const auto id = AirPatrolId(heli);
+            if (id && ActiveWantedLevel() >= 3) {
+                const auto origin = EntityPosition(heli);
+                const auto destination = Read<ulw::Point>(heli, 0x3EC);
+                const auto search = SearchForPlayer(heli, origin, destination, id, now, ulw::PatrolMode::Air);
+                s_AirPatrols[slot] = {id, now, search, true};
+                if (search.phase != ulw::SearchPhase::Pursue) {
+                    ++s_AirSearches;
+                    const auto point = ulw::AirSearchPoint(search, origin, EntityForward(heli), destination.z);
+                    std::memcpy(static_cast<std::byte*>(heli) + 0x3EC, &point, sizeof(point));
+                    const auto dx = point.x - origin.x;
+                    const auto dy = point.y - origin.y;
+                    heading = GameFunction<HeadingForOffset>(0x53CC70)(dx, dy);
+                    distance = std::sqrt(dx * dx + dy * dy);
+                }
+            } else {
+                s_AirPatrols[slot] = {};
+            }
+            break;
+        }
+    }
+    GameFunction<FlyHelicopter>(0x429A70)(heli, heading, distance, policeFlight);
+}
+
+void __cdecl OnSearchLight(const ulw::Point& origin, const ulw::Point& target,
+    float radius, float power, std::uint32_t corona, std::uint8_t clip, std::uint8_t shadow) noexcept {
+    const auto add = GameFunction<AddSearchLight>(0x6C45B0);
+    if (GameValue<std::int32_t>(0xB72914) == 0 && FreeRoam()) {
+        const auto now = GameValue<std::uint32_t>(0xB7CB84);
+        for (std::size_t slot = 0; slot < s_AirPatrols.size(); ++slot) {
+            const auto* const heli = GameValue<const void*>(PoliceHelicopters + slot * sizeof(void*));
+            const auto& observation = s_AirPatrols[slot];
+            if (!heli || corona != reinterpret_cast<std::uintptr_t>(heli) + 0x0B ||
+                !observation.observed || observation.id != AirPatrolId(heli) || now - observation.at > 500) {
+                continue;
+            }
+            if (observation.search.phase == ulw::SearchPhase::Pursue) {
+                break;
+            }
+            if (ulw::HasSearchContact(observation.search.phase)) {
+                add(origin, observation.search.point, radius, power, corona, clip, shadow);
+            }
+            return;
+        }
+    }
+    add(origin, target, radius, power, corona, clip, shadow);
+}
+
+bool __cdecl OnRoadblockNode(std::uint32_t address, float* width, ulw::Point* crossRoad) noexcept {
+    const auto info = GameFunction<RoadblockNodeInfo>(0x460EE0);
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    if (!StreetActive(now) || GameValue<std::int32_t>(0xB72914) != 0) {
+        return info(address, width, crossRoad);
+    }
+    const auto wanted = ActiveWantedLevel();
+    const auto area = address & 0xffffu;
+    const auto index = address >> 16;
+    if (wanted < 3 || !s_Roadblocks.Ready(now, wanted) || area >= 64 ||
+        index >= GameValue<std::uint32_t>(0x970114 + area * sizeof(std::uint32_t))) {
+        return false;
+    }
+    const auto* const nodes = GameValue<const std::byte*>(0x96F854 + area * sizeof(void*));
+    if (!nodes) {
+        return false;
+    }
+    const auto* const node = nodes + index * 0x1C;
+    const auto flags = Read<std::uint8_t>(node, 0x18);
+    const auto links = flags & 0x0Fu;
+    if (links < 2 || (flags & 0xB0)) {
+        return false;
+    }
+    const ulw::Point road{
+        static_cast<float>(Read<std::int16_t>(node, 0x08)) / 8.0f,
+        static_cast<float>(Read<std::int16_t>(node, 0x0A)) / 8.0f,
+        static_cast<float>(Read<std::int16_t>(node, 0x0C)) / 8.0f,
+    };
+    const auto* const player = GameFunction<PlayerVehicle>(0x56E0D0)(-1, false);
+    if (!player || !info(address, width, crossRoad)) {
+        return false;
+    }
+    const bool highway = (Read<std::uint8_t>(node, 0x19) & 0x20) != 0;
+    if (!ulw::SuitableRoadblock({road, EntityPosition(player), *width,
+        ulw::DistanceSquared(Read<ulw::Point>(player, 0x44), {}), wanted, links, highway, true,
+        s_UseSightingForRoadblocks, s_Police.HasRecentReport(road, now)})) {
+        return false;
+    }
+    const auto* const camera = reinterpret_cast<const void*>(ActiveCamera);
+    if (!Read<const void*>(camera, 0x14)) {
+        return false;
+    }
+    const auto viewpoint = EntityPosition(camera);
+    auto candidate = road;
+    candidate.z += 1.25f;
+    if (ulw::InCameraCone(viewpoint, EntityForward(camera), candidate) &&
+        GameFunction<LineClear>(0x56A490)(viewpoint, candidate, true, false, false, true, true, false, false)) {
+        return false;
+    }
+    s_Roadblocks.Record(now);
+    ++s_RoadblockAttempts;
+    LogActivity(now);
+    return true;
 }
 
 void __cdecl OnCarAI(void* car) noexcept {
@@ -722,7 +866,7 @@ bool InstallPolice() noexcept {
         PatchCalls({0x46FC3A}, 0x46FEE0, reinterpret_cast<std::uintptr_t>(&OnSeek));
 }
 
-void InstallPatrolRoutes() noexcept {
+bool InstallPatrolRoutes() noexcept {
     const bool queries = PedQueriesMatch() && VehicleQueriesMatch() &&
         Matches(0x56E230, Entry{0x8B, 0x44, 0x24, 0x04, 0x85, 0xC0, 0x7D, 0x07});
     const bool routes = queries &&
@@ -734,6 +878,33 @@ void InstallPatrolRoutes() noexcept {
         PatchCalls({0x4372A2}, 0x4335E0, reinterpret_cast<std::uintptr_t>(&OnBlockSteering));
     Log(routes ? "Installed: patrol search routes." : "Skipped: pursuit route function differs.");
     Log(steering ? "Installed: patrol block steering." : "Skipped: pursuit steering function differs.");
+    return routes || steering;
+}
+
+bool InstallAirSupport() noexcept {
+    const bool flight =
+        PedQueriesMatch() && VehicleQueriesMatch() &&
+        Matches(0x56E230, Entry{0x8B, 0x44, 0x24, 0x04, 0x85, 0xC0, 0x7D, 0x07}) &&
+        Matches(0x42AAD0, Entry{0x83, 0xEC, 0x10, 0x53, 0x55, 0x8B, 0x6C, 0x24}) &&
+        Matches(0x429A70, Entry{0x81, 0xEC, 0x90, 0x00, 0x00, 0x00, 0x53, 0x56}) &&
+        Matches(0x53CC70, Entry{0xD9, 0x44, 0x24, 0x04, 0xD8, 0x1D, 0x50, 0x8B}) &&
+        PatchCalls({0x42AC81}, 0x429A70, reinterpret_cast<std::uintptr_t>(&OnPoliceHeliFlight));
+    Log(flight ? "Installed: police helicopter search." : "Skipped: police flight function differs.");
+    const bool searchlight = flight &&
+        Matches(0x6C54C0, std::array<std::uint8_t, 4>{0x8D, 0x56, 0x0B, 0x52}) &&
+        Matches(0x6C45B0, Entry{0x8B, 0x15, 0x6C, 0xC9, 0xC1, 0x00, 0x8B, 0x4C}) &&
+        PatchCalls({0x6C54F7}, 0x6C45B0, reinterpret_cast<std::uintptr_t>(&OnSearchLight));
+    Log(searchlight ? "Installed: police searchlight tracks search reports." : "Skipped: police searchlight function differs.");
+    return flight;
+}
+
+bool InstallRoadblocks() noexcept {
+    return Matches(0x4629E0, Entry{0x6A, 0xFF, 0x68, 0x73, 0x7C, 0x83, 0x00, 0x64}) &&
+        Matches(0x460EE0, Entry{0x8B, 0x44, 0x24, 0x04, 0x0F, 0xB7, 0x4C, 0x24}) &&
+        Matches(0x56E0D0, Entry{0x8B, 0x44, 0x24, 0x04, 0x85, 0xC0, 0x7D, 0x07}) &&
+        Matches(0x56E230, Entry{0x8B, 0x44, 0x24, 0x04, 0x85, 0xC0, 0x7D, 0x07}) &&
+        Matches(0x56A490, Entry{0x83, 0xEC, 0x5C, 0x66, 0x81, 0x3D, 0x78, 0xCD}) &&
+        PatchCalls({0x462BFF}, 0x460EE0, reinterpret_cast<std::uintptr_t>(&OnRoadblockNode));
 }
 
 bool InstallTraffic() noexcept {
@@ -791,7 +962,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.4.0");
+    Log("Ultimate Living World 0.5.0");
     if (GetPrivateProfileIntW(L"Modules", L"Civilian", 1, config.c_str())) {
         const auto civilian = InstallCivilian();
         Log(civilian ? "Installed: civilian gunshot reactions." : "Skipped: civilian dispatcher differs.");
@@ -801,8 +972,17 @@ void Install(const std::filesystem::path& config) noexcept {
         Log(fire ? "Installed: civilian fire reactions." : "Skipped: fire dispatcher differs.");
     }
     if (GetPrivateProfileIntW(L"Modules", L"Police", 1, config.c_str())) {
-        Log(InstallPolice() ? "Installed: foot patrol sight and search." : "Skipped: police seek function differs.");
-        InstallPatrolRoutes();
+        const auto foot = InstallPolice();
+        Log(foot ? "Installed: foot patrol sight and search." : "Skipped: police seek function differs.");
+        const auto cars = InstallPatrolRoutes();
+        s_UseSightingForRoadblocks = foot || cars;
+    }
+    if (GetPrivateProfileIntW(L"Modules", L"AirSupport", 1, config.c_str())) {
+        const auto air = InstallAirSupport();
+        s_UseSightingForRoadblocks = s_UseSightingForRoadblocks || air;
+    }
+    if (GetPrivateProfileIntW(L"Modules", L"Roadblocks", 1, config.c_str())) {
+        Log(InstallRoadblocks() ? "Installed: dynamic roadblock placement filter." : "Skipped: roadblock function differs.");
     }
     if (GetPrivateProfileIntW(L"Modules", L"Traffic", 1, config.c_str())) {
         Log(InstallTraffic() ? "Installed: traffic speed limits." : "Skipped: traffic speed function differs.");

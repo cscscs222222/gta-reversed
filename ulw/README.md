@@ -1,4 +1,4 @@
-# Ultimate Living World 0.4.0
+# Ultimate Living World 0.5.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
@@ -6,6 +6,8 @@ Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 | --- | --- |
 | Siviller | Silah sesine ve yakındaki yangına mesafe, görüş ve yakın geçmişe göre tepki verir. |
 | Polis | Yaya devriyeler ve polis otomobilleri son görüş konumunu paylaşabilir. Kapsanan araç takibinde polis, görüş kaybından sonra kaydedilen noktaya doğru yol seçer ve yaklaştığında daha geniş bir alanı tarar. |
+| Hava desteği | Serbest dolaşımda polis helikopteri görüş bilgisini devriyelerle paylaşır. Görüş kesilince son bildirilen bölgeyi tarar. Gece projektörü tarama konumuna yönelir. |
+| Barikatlar | Oyunun dinamik barikat adayları yol genişliği, araç hızı, takip bilgisi ve kamera görüşüne göre elenir. Oyun yol geometrisini ve barikat araçlarını kendi yönetir. |
 | Trafik | Sivil sürücüler yağmur, sis, gece, çarpışma veya arkadan yaklaşan siren nedeniyle yavaşlayabilir. Ağır çarpışmadan sonra duran araçlar aynı seviyede arkadan yaklaşan trafiği de yavaşlatabilir. Mevcut kırmızı ışık ve trafik sınırları uygulanmaya devam eder. |
 | Otomobiller | Islak yol ve ağır hasar yol tutuşunu azaltır. Uzun süreli sert frenleme fren etkisini, ağır hasar da aracın çekişini düşürebilir. |
 | Çatışma | Uygun serbest dolaşım karşılaşmalarında oyuncuya ateş eden polis ve çete üyelerinin isabeti mesafe, aydınlık, hava ve can durumuna göre değişir. Açık havada yakın çatışmalar zorlaşır. |
@@ -21,14 +23,14 @@ Paketi kaldırmak için oyun kapalıyken kopyaladığın iki dosyayı kaldır. `
 
 ## Kontroller
 
-Windows derlemesi sivil tepkileri, devriyeler arası konum paylaşımı, araç araması, trafik kazası algılama, fren ve tutuş, isabet profilleri ve kentteki kullanım saatleri için otomatik testleri çalıştırır. Ayrıca Windows test sürecinde ASI yüklenir ve oyun olmayan bir yürütülebilir dosyada bağlantıların devre dışı kaldığı kontrol edilir.
+Windows derlemesi sivil tepkileri, hava ve kara devriyeleri arasındaki konum paylaşımını, arama rotalarını, barikat adaylarını, trafik kazası algılamayı, fren ve tutuşu, isabet profillerini ve kentteki kullanım saatlerini otomatik olarak test eder. Windows test süreci ASI’yi yükler ve bağlantıların oyun dışı bir süreçte devre dışı kaldığını kontrol eder.
 
-Oyun içi doğrulama için serbest dolaşımda bir polis otomobilini peşine tak ve köşeyi dönüp görüş hattını kes. Trafikte duran ağır hasarlı bir aracın arkasından gelen sürücüleri ve yağmurda barınak kullanımını gözle. Görev bayrakları ve ara sahne durumları yeni davranışları sınırlamak için kullanılır. Görevlerin, kayıt yüklemenin ve diğer eklentilerle birlikte çalışmanın oyun içi testleri bekliyor.
+Oyun içi doğrulama için gece serbest dolaşımda helikopter takibini başlat ve kapalı bir alana girerek görüş hattını kes. Araçla kovalamacada açık görüş alanında barikatların yerleşimini ve köşeyi döndükten sonra polislerin yönünü karşılaştır. Arama ve dinamik barikat kuralları serbest dolaşımda çalışır. Görevlerin, kayıt yüklemenin ve diğer eklentilerle birlikte çalışmanın oyun içi testleri bekliyor.
 
-Günlük oyun zamanı ilerledikçe NPC kaçışı, devriye rotaları, kazaya bağlı yavaşlama ve etkinlik noktalarının kullanımını sayar. Farklı bir ASI aynı oyun çağrısını önceden değiştirmişse Ultimate Living World ilgili bağlantıyı atlar ve durumu kaydeder. ASI değişikliklerini oyun kapalıyken yap.
+Günlük oyun zamanı ilerledikçe NPC kaçışı, devriye rotaları, hava araması, barikat yerleşim denemeleri, kazaya bağlı yavaşlama ve etkinlik noktalarının kullanımını sayar. `AirSupport` ve `Roadblocks` ayarları yeni sistemleri ayrı ayrı kapatır. Farklı bir ASI aynı oyun çağrısını önceden değiştirmişse Ultimate Living World ilgili bağlantıyı atlar ve durumu kaydeder. ASI değişikliklerini oyun kapalıyken yap.
 
 ## Derleme
 
 `build.cmd` var olan MSVC x86 ortamını kullanır ve paketi `bin/ulw/dist` altında üretir. GitHub Actions’taki **Build** iş akışı aynı adımları çalıştırır. Başarılı çalışmanın **Artifacts** bölümünde **UltimateLivingWorld** paketi çıkar. Arşivde ASI, INI, doğrulama betiği ve bu kılavuz bulunur.
 
-Bireysel NPC iş ve ev rotaları, yeni şehir etkinlikleri, ekonomi, polis helikopterleri ve barikatlar, diğer taşıtların fiziği ve Ultimate Chaos Missions entegrasyonu tam sürüm için bekliyor.
+Bireysel NPC iş ve ev rotaları, yeni şehir etkinlikleri, ekonomi, ayrıntılı yakalama taktikleri, diğer taşıtların fiziği ve Ultimate Chaos Missions entegrasyonu tam sürüm için bekliyor.

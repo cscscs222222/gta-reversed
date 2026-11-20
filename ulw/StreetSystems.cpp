@@ -15,9 +15,9 @@ bool IsNight(unsigned hour) noexcept {
 }
 
 std::uint32_t PatrolSlot(std::uint32_t id) noexcept {
-    // Vehicle pool references are tagged by the engine adapter. Offset
-    // their cache slots so a nearby driver's record need not evict a foot patrol.
-    return ((id & 0x7fffffffu) >> 8) + ((id >> 31) * 47u);
+    // Keep pedestrian, patrol-car and helicopter references in different
+    // parts of the cache even when their native pool indices coincide.
+    return ((id & 0x3fffffffu) >> 8) + ((id >> 31) * 47u) + (((id >> 30) & 1u) * 91u);
 }
 
 }
@@ -50,7 +50,7 @@ bool PoliceSearch::ShouldSample(std::uint32_t officer, std::uint32_t now, std::u
 }
 
 void PoliceSearch::Observe(std::uint32_t officer, std::uint32_t now,
-    Point officerPosition, Point point, bool visible) noexcept {
+    Point officerPosition, Point point, bool visible, PatrolMode mode) noexcept {
     auto& record = m_Officers[PatrolSlot(officer) % m_Officers.size()];
     if (!record.sampled || record.ref != officer) {
         record = {};
@@ -63,12 +63,14 @@ void PoliceSearch::Observe(std::uint32_t officer, std::uint32_t now,
         record.lastSeen = point;
         record.seenAt = now;
         record.hasSeen = true;
-        m_Reports[PatrolSlot(officer) % m_Reports.size()] = {officerPosition, point, now, officer, true};
+        const auto reportOrigin = mode == PatrolMode::Air ? point : officerPosition;
+        m_Reports[PatrolSlot(officer) % m_Reports.size()] = {reportOrigin, point, now, officer, true};
     }
 }
 
 SearchTarget PoliceSearch::Target(std::uint32_t officer, std::uint32_t now,
     Point officerPosition, PatrolMode mode) const noexcept {
+    const bool airborne = mode == PatrolMode::Air;
     const bool driving = mode == PatrolMode::Car;
     const auto& record = m_Officers[PatrolSlot(officer) % m_Officers.size()];
     const bool ownRecord = record.sampled && record.ref == officer;
@@ -80,10 +82,10 @@ SearchTarget PoliceSearch::Target(std::uint32_t officer, std::uint32_t now,
     auto newestAge = hasLocalSighting ? std::min(3800u, now - record.seenAt) : 3800u;
     for (const auto& report : m_Reports) {
         const auto age = now - report.at;
-        const auto radioRange = driving ? 65.0f : 38.0f;
+        const auto radioRange = airborne ? 155.0f : driving ? 65.0f : 38.0f;
         if (report.occupied && (report.officer >> 8) != (officer >> 8) &&
             age < newestAge && DistanceSquared(officerPosition, report.reporter) <= radioRange * radioRange &&
-            std::abs(officerPosition.z - report.reporter.z) <= 8.0f) {
+            std::abs(officerPosition.z - report.reporter.z) <= (airborne ? 125.0f : 8.0f)) {
             nearby = &report;
             newestAge = age;
         }
@@ -95,16 +97,28 @@ SearchTarget PoliceSearch::Target(std::uint32_t officer, std::uint32_t now,
     // sweeps a different part of the immediate area.
     auto destination = nearby ? nearby->lastSeen : record.lastSeen;
     const auto age = nearby ? newestAge : now - record.seenAt;
-    const auto arrivalRadius = driving ? 18.0f : 8.0f;
-    if (age < 2300 || DistanceSquared(officerPosition, destination) > arrivalRadius * arrivalRadius) {
+    const auto arrivalRadius = airborne ? 32.0f : driving ? 18.0f : 8.0f;
+    const auto altitude = officerPosition.z - destination.z;
+    const auto rangeSquared = DistanceSquared(officerPosition, destination) - (airborne ? altitude * altitude : 0.0f);
+    if (age < 2300 || rangeSquared > arrivalRadius * arrivalRadius) {
         return {nearby ? SearchPhase::Respond : SearchPhase::LastSeen, destination};
     }
     const auto section = (PatrolSlot(officer) + age / 1400) % 4;
     constexpr std::array<Point, 4> sweep{{{1, 0, 0}, {0, 1, 0}, {-1, 0, 0}, {0, -1, 0}}};
-    const float radius = driving ? 20.0f : 3.0f;
+    const float radius = airborne ? 34.0f : driving ? 20.0f : 3.0f;
     destination.x += radius * sweep[section].x;
     destination.y += radius * sweep[section].y;
     return {SearchPhase::Search, destination};
+}
+
+bool PoliceSearch::HasRecentReport(Point position, std::uint32_t now) const noexcept {
+    for (const auto& report : m_Reports) {
+        if (report.occupied && now - report.at < 4200 && std::abs(report.lastSeen.z - position.z) <= 12.0f &&
+            DistanceSquared(position, report.lastSeen) <= 105.0f * 105.0f) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void PoliceSearch::Reset() noexcept {
@@ -112,6 +126,54 @@ void PoliceSearch::Reset() noexcept {
     m_Reports = {};
     m_Frame = 0;
     m_Casts = 0;
+}
+
+bool HasSearchContact(SearchPhase phase) noexcept {
+    return phase != SearchPhase::Observe && phase != SearchPhase::Lost;
+}
+
+Point AirSearchPoint(SearchTarget target, Point helicopter, Point forward, float flightReferenceZ) noexcept {
+    auto point = target.point;
+    const auto dx = point.x - helicopter.x;
+    const auto dy = point.y - helicopter.y;
+    if (!HasSearchContact(target.phase) || !std::isfinite(dx) || !std::isfinite(dy) || dx * dx + dy * dy < 64.0f) {
+        point = {helicopter.x + forward.x * 28.0f, helicopter.y + forward.y * 28.0f, flightReferenceZ};
+    }
+    return point;
+}
+
+bool SuitableRoadblock(const RoadblockCandidate& site) noexcept {
+    if (site.wanted < 3 || !site.activeRoad || site.links < 2 || !std::isfinite(site.width) ||
+        !std::isfinite(site.speedSquared) || (site.sightingRequired && !site.recentlySeen)) {
+        return false;
+    }
+    const auto minWidth = site.highway || (site.links >= 3 && site.wanted >= 4) ? 10.0f : 15.0f;
+    const auto minDistance = 45.0f + Unit(site.speedSquared / 0.8f) * 23.0f;
+    const auto distance = DistanceSquared(site.road, site.player);
+    return site.width >= minWidth && std::abs(site.road.z - site.player.z) <= 7.5f &&
+        distance >= minDistance * minDistance && distance <= 92.0f * 92.0f;
+}
+
+bool InCameraCone(Point camera, Point forward, Point target) noexcept {
+    const auto dx = target.x - camera.x;
+    const auto dy = target.y - camera.y;
+    const auto dz = target.z - camera.z;
+    const auto dot = forward.x * dx + forward.y * dy + forward.z * dz;
+    return dot > 0.0f && dot * dot >= 0.36f * (dx * dx + dy * dy + dz * dz);
+}
+
+bool RoadblockAttempts::Ready(std::uint32_t now, unsigned wanted) const noexcept {
+    return !m_HasAttempt || now - m_Last >= (wanted >= 5 ? 11000u : 16000u);
+}
+
+void RoadblockAttempts::Record(std::uint32_t now) noexcept {
+    m_Last = now;
+    m_HasAttempt = true;
+}
+
+void RoadblockAttempts::Reset() noexcept {
+    m_Last = 0;
+    m_HasAttempt = false;
 }
 
 float TrafficLimit(const TrafficInput& input) noexcept {
