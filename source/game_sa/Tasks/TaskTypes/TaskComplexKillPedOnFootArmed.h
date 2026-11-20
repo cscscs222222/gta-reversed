@@ -45,7 +45,7 @@ public:
     int32      m_needToMoveInCloserTime{}; 
 
 public:
-    static void InjectHooks();
+    static void InjectHooks(bool enemyAIOnly = false);
 
     static constexpr auto Type = eTaskType::TASK_COMPLEX_KILL_PED_ON_FOOT_ARMED;
 

@@ -11,21 +11,27 @@ static bool IsAttackingPlayer(const CPed* ped, const CPed* target) {
     return target && target->IsPlayer() && !ped->IsPlayer();
 }
 
-void CTaskComplexKillPedOnFootArmed::InjectHooks() {
+void CTaskComplexKillPedOnFootArmed::InjectHooks(bool enemyAIOnly) {
     RH_ScopedVirtualClass(CTaskComplexKillPedOnFootArmed, 0x86d918, 11);
     RH_ScopedCategory("Tasks/TaskTypes");
 
-    RH_ScopedInstall(Constructor, 0x621190);
-    RH_ScopedInstall(Destructor, 0x621250);
+    if (!enemyAIOnly) {
+        RH_ScopedInstall(Constructor, 0x621190);
+        RH_ScopedInstall(Destructor, 0x621250);
+    }
 
     RH_ScopedInstall(LineOfSightClearForAttack, 0x621500);
-    RH_ScopedInstall(IsPedInLeaderFiringLine, 0x621300);
-    RH_ScopedInstall(CreateSubTask, 0x626FC0, {.Reversed = false});
 
-    RH_ScopedVMTInstall(Clone, 0x6234C0);
-    RH_ScopedVMTInstall(GetTaskType, 0x621240);
-    RH_ScopedVMTInstall(MakeAbortable, 0x6212B0);
-    RH_ScopedVMTInstall(CreateNextSubTask, 0x62C190, {.Reversed = false});
+    if (!enemyAIOnly) {
+        RH_ScopedInstall(IsPedInLeaderFiringLine, 0x621300);
+        RH_ScopedInstall(CreateSubTask, 0x626FC0, {.Reversed = false});
+
+        RH_ScopedVMTInstall(Clone, 0x6234C0);
+        RH_ScopedVMTInstall(GetTaskType, 0x621240);
+        RH_ScopedVMTInstall(MakeAbortable, 0x6212B0);
+        RH_ScopedVMTInstall(CreateNextSubTask, 0x62C190, {.Reversed = false});
+    }
+
     RH_ScopedVMTInstall(CreateFirstSubTask, 0x62BF00);
     RH_ScopedVMTInstall(ControlSubTask, 0x62CCE0);
 }

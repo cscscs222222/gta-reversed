@@ -3,17 +3,18 @@
 #include "TaskSimpleUseGun.h"
 #include "TaskSimpleDuck.h"
 
-void CTaskSimpleGunControl::InjectHooks() {
+void CTaskSimpleGunControl::InjectHooks(bool enemyAIOnly) {
     RH_ScopedVirtualClass(CTaskSimpleGunControl, 0x86d76c, 9);
     RH_ScopedCategory("Tasks/TaskTypes");
 
-    RH_ScopedInstall(Constructor, 0x61F3F0);
+    if (!enemyAIOnly) {
+        RH_ScopedInstall(Constructor, 0x61F3F0);
+        RH_ScopedInstall(Destructor, 0x61F4D0);
+        RH_ScopedVMTInstall(Clone, 0x622FB0);
+        RH_ScopedVMTInstall(GetTaskType, 0x61F4C0);
+        RH_ScopedVMTInstall(MakeAbortable, 0x61F530);
+    }
 
-    RH_ScopedInstall(Destructor, 0x61F4D0);
-
-    RH_ScopedVMTInstall(Clone, 0x622FB0);
-    RH_ScopedVMTInstall(GetTaskType, 0x61F4C0);
-    RH_ScopedVMTInstall(MakeAbortable, 0x61F530);
     RH_ScopedVMTInstall(ProcessPed, 0x625270);
 }
 

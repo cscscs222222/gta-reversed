@@ -42,7 +42,7 @@ public:
     bool        m_aimImmidiately{};
 
 public:
-    static void InjectHooks();
+    static void InjectHooks(bool enemyAIOnly = false);
 
     static constexpr auto Type = eTaskType::TASK_SIMPLE_GUN_CTRL;
 
