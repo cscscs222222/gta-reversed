@@ -69,6 +69,7 @@ void TestDecisions() {
 }
 
 void TestPoliceSearch() {
+    using ulw::PatrolMode;
     using ulw::SearchPhase;
     ulw::PoliceSearch police;
     const ulw::Point start{10, 10, 0}, lastSeen{14, 12, 0};
@@ -99,6 +100,47 @@ void TestPoliceSearch() {
     Check(!police.ShouldSample(0x901, 7600, 32) && police.ShouldSample(0x901, 7616, 33), "LOS budget should reset each frame");
     police.Reset();
     Check(police.Target(lead, 1000, start).phase == SearchPhase::Observe, "reset retained the old chase");
+
+    constexpr std::uint32_t cruiser = 0x80000101;
+    const ulw::Point acrossStreet{62, 10, 0};
+    police.Observe(lead, 1000, start, lastSeen, true);
+    Check(police.Target(cruiser, 1250, acrossStreet, PatrolMode::Car).phase == SearchPhase::Respond,
+        "an unsampled cruiser should act on a nearby foot patrol report");
+    const auto sweep = police.Target(cruiser, 3500, lastSeen, PatrolMode::Car);
+    Check(sweep.phase == SearchPhase::Search && ulw::DistanceSquared(sweep.point, lastSeen) == 400,
+        "cruiser sweep should be wide enough to hand off to the road graph");
+    police.Observe(cruiser, 3550, acrossStreet, {62, 16, 0}, true);
+    police.Observe(cruiser, 3800, acrossStreet, {100, 110, 0}, false);
+    const auto lostSight = police.Target(cruiser, 3850, acrossStreet, PatrolMode::Car);
+    Check(lostSight.phase == SearchPhase::LastSeen && lostSight.point.x == 62 && lostSight.point.y == 16,
+        "an obscured player's live coordinates must not overwrite the patrol route");
+    Check(police.Target(0x401, 3850, acrossStreet).phase == SearchPhase::Respond,
+        "a foot patrol should get the cruiser report");
+}
+
+void TestCrashScenes() {
+    ulw::CrashScenes scenes;
+    constexpr ulw::Point scene{0, 15, 0}, north{0, 1, 0};
+    scenes.Observe({0x301, 1000, 900, scene, 0.0f, 5.0f});
+    Check(!scenes.Ahead({}, north, 1100), "a minor bump must not start a crash scene");
+    scenes.Observe({0x301, 1000, 900, scene, 0.08f, 45.0f});
+    Check(!scenes.Ahead({}, north, 1100), "a moving car must not mark the road obstructed");
+    scenes.Observe({0x301, 1000, 900, scene, 0.0f, 45.0f});
+    Check(scenes.Ahead({}, north, 1100), "a stopped crash should affect approaching traffic");
+    Check(!scenes.Ahead({0, 0, 6}, north, 1100) && !scenes.Ahead({}, {0, -1, 0}, 1100),
+        "traffic travelling away or on another elevation must ignore the incident");
+    Check(!scenes.Ahead({}, north, 8900), "crash scene should expire");
+    scenes.Observe({0x302, 1350, 0, {50, 50, 0}, 0.0f, 0.0f});
+    Check(!scenes.Ahead({}, north, 1350), "a recycled vehicle slot should clear the scene");
+    scenes.Observe({0x302, 1600, 1510, scene, 0.0f, 45.0f});
+    scenes.Observe({0x302, 2010, 1510, scene, 0.05f, 0.0f});
+    Check(!scenes.Ahead({}, north, 2020), "a crash scene should clear once the car drives away");
+    ulw::TrafficInput input{50, 40, 0, 0, 12, 12, false, false};
+    const auto normal = ulw::TrafficLimit(input);
+    input.crashAhead = true;
+    Check(ulw::TrafficLimit(input) < normal, "the incident must lower the speed cap");
+    input.nativeLimit = 0;
+    Check(ulw::TrafficLimit(input) == 0, "crash scene must preserve the red-light stop");
 }
 
 void TestTrafficAndPhysics() {
@@ -162,6 +204,14 @@ void TestCityActivity() {
     Check(vegasLate.pedestrians > laLate.pedestrians && vegasLate.cars > laLate.cars, "Las Venturas should stay busier at night");
     Check(foggyDesert.cars < laRush.cars && wetRush.pedestrians < laRush.pedestrians, "weather should reduce outdoor activity");
     Check(ulw::AmbientActivity(0, 0, 1, 1, 1).cars == 1, "uninitialized clock should use native activity");
+    Check(ulw::AttractorUsePercent(2, 9, 3, 1, 0) > ulw::AttractorUsePercent(2, 9, 7, 1, 0),
+        "bus stops should favor weekday commuting hours");
+    Check(ulw::AttractorUsePercent(3, 1, 5, 3, 0) > ulw::AttractorUsePercent(3, 1, 5, 1, 0),
+        "Las Venturas food stands should stay busier after midnight");
+    Check(ulw::AttractorUsePercent(4, 11, 3, 1, 1) > ulw::AttractorUsePercent(4, 11, 3, 1, 0) &&
+        ulw::AttractorUsePercent(1, 11, 3, 1, 1) < ulw::AttractorUsePercent(1, 11, 3, 1, 0),
+        "rain should favor shelters instead of open benches");
+    Check(ulw::AttractorUsePercent(5, 1, 5, 1, 1) == 100, "script triggers must retain native availability");
 }
 
 void TestLoader(const std::filesystem::path& asi) {
@@ -192,6 +242,7 @@ int wmain(int argc, wchar_t** argv) {
         TestDecisions();
         std::puts("Core: frame budget, perception, memory, slot reuse and reactions passed.");
         TestPoliceSearch();
+        TestCrashScenes();
         TestTrafficAndPhysics();
         std::puts("Street systems: police search and reports, traffic limits, wet grip and brake fade passed.");
         TestCombat();

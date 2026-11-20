@@ -8,6 +8,7 @@ float DistanceSquared(Point a, Point b) noexcept;
 float SightRange(float wet, float fog, unsigned hour) noexcept;
 
 enum class SearchPhase : std::uint8_t { Observe, Pursue, LastSeen, Respond, Search, Lost };
+enum class PatrolMode : std::uint8_t { Foot, Car };
 
 struct SearchTarget {
     SearchPhase phase;
@@ -18,7 +19,8 @@ class PoliceSearch {
 public:
     bool ShouldSample(std::uint32_t officer, std::uint32_t now, std::uint32_t frame) noexcept;
     void Observe(std::uint32_t officer, std::uint32_t now, Point officerPosition, Point point, bool visible) noexcept;
-    SearchTarget Target(std::uint32_t officer, std::uint32_t now, Point officerPosition) const noexcept;
+    SearchTarget Target(std::uint32_t officer, std::uint32_t now, Point officerPosition,
+        PatrolMode mode = PatrolMode::Foot) const noexcept;
     void Reset() noexcept;
 
 private:
@@ -53,8 +55,34 @@ struct TrafficInput {
     std::uint32_t seed;
     bool recentCollision;
     bool sirenApproaching;
+    bool crashAhead{};
 };
 float TrafficLimit(const TrafficInput& input) noexcept;
+
+struct CrashObservation {
+    std::uint32_t vehicle;
+    std::uint32_t now;
+    std::uint32_t impactAt;
+    Point position;
+    float speedSquared;
+    float impact;
+};
+
+class CrashScenes {
+public:
+    void Observe(const CrashObservation& observation) noexcept;
+    bool Ahead(Point position, Point forward, std::uint32_t now) const noexcept;
+    void Reset() noexcept;
+
+private:
+    struct Scene {
+        std::uint32_t vehicle{};
+        std::uint32_t impactAt{};
+        Point position{};
+        bool occupied{};
+    };
+    std::array<Scene, 16> m_Scenes{};
+};
 
 struct CityActivity {
     float pedestrians;
@@ -62,6 +90,7 @@ struct CityActivity {
 };
 
 CityActivity AmbientActivity(unsigned hour, unsigned weekday, unsigned region, float wet, float fog) noexcept;
+unsigned AttractorUsePercent(unsigned type, unsigned hour, unsigned weekday, unsigned region, float rain) noexcept;
 
 std::uint8_t CombatAccuracy(std::uint8_t native, unsigned faction, float health, float distanceSquared,
     float wet, float fog, unsigned hour) noexcept;

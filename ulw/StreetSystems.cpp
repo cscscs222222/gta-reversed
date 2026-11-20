@@ -14,6 +14,12 @@ bool IsNight(unsigned hour) noexcept {
     return hour >= 21 || hour < 6;
 }
 
+std::uint32_t PatrolSlot(std::uint32_t id) noexcept {
+    // Vehicle pool references are tagged by the engine adapter. Offset
+    // their cache slots so a nearby driver's record need not evict a foot patrol.
+    return ((id & 0x7fffffffu) >> 8) + ((id >> 31) * 47u);
+}
+
 }
 
 float DistanceSquared(Point a, Point b) noexcept {
@@ -35,7 +41,7 @@ bool PoliceSearch::ShouldSample(std::uint32_t officer, std::uint32_t now, std::u
     if (m_Casts >= 5) {
         return false;
     }
-    const auto& record = m_Officers[(officer >> 8) % m_Officers.size()];
+    const auto& record = m_Officers[PatrolSlot(officer) % m_Officers.size()];
     if (record.sampled && record.ref == officer && now - record.sampledAt < 210) {
         return false;
     }
@@ -45,7 +51,7 @@ bool PoliceSearch::ShouldSample(std::uint32_t officer, std::uint32_t now, std::u
 
 void PoliceSearch::Observe(std::uint32_t officer, std::uint32_t now,
     Point officerPosition, Point point, bool visible) noexcept {
-    auto& record = m_Officers[(officer >> 8) % m_Officers.size()];
+    auto& record = m_Officers[PatrolSlot(officer) % m_Officers.size()];
     if (!record.sampled || record.ref != officer) {
         record = {};
         record.ref = officer;
@@ -57,44 +63,47 @@ void PoliceSearch::Observe(std::uint32_t officer, std::uint32_t now,
         record.lastSeen = point;
         record.seenAt = now;
         record.hasSeen = true;
-        m_Reports[(officer >> 8) % m_Reports.size()] = {officerPosition, point, now, officer, true};
+        m_Reports[PatrolSlot(officer) % m_Reports.size()] = {officerPosition, point, now, officer, true};
     }
 }
 
-SearchTarget PoliceSearch::Target(std::uint32_t officer, std::uint32_t now, Point officerPosition) const noexcept {
-    const auto& record = m_Officers[(officer >> 8) % m_Officers.size()];
-    if (!record.sampled || record.ref != officer) {
-        return {SearchPhase::Observe, officerPosition};
-    }
-    const bool hasLocalSighting = record.hasSeen && now - record.seenAt < 6500;
-    if (record.visible && now - record.sampledAt < 420) {
+SearchTarget PoliceSearch::Target(std::uint32_t officer, std::uint32_t now,
+    Point officerPosition, PatrolMode mode) const noexcept {
+    const bool driving = mode == PatrolMode::Car;
+    const auto& record = m_Officers[PatrolSlot(officer) % m_Officers.size()];
+    const bool ownRecord = record.sampled && record.ref == officer;
+    const bool hasLocalSighting = ownRecord && record.hasSeen && now - record.seenAt < 6500;
+    if (ownRecord && record.visible && now - record.sampledAt < 420) {
         return {SearchPhase::Pursue, record.lastSeen};
     }
     const Report* nearby{};
     auto newestAge = hasLocalSighting ? std::min(3800u, now - record.seenAt) : 3800u;
     for (const auto& report : m_Reports) {
         const auto age = now - report.at;
+        const auto radioRange = driving ? 65.0f : 38.0f;
         if (report.occupied && (report.officer >> 8) != (officer >> 8) &&
-            age < newestAge && DistanceSquared(officerPosition, report.reporter) <= 38.0f * 38.0f &&
+            age < newestAge && DistanceSquared(officerPosition, report.reporter) <= radioRange * radioRange &&
             std::abs(officerPosition.z - report.reporter.z) <= 8.0f) {
             nearby = &report;
             newestAge = age;
         }
     }
     if (!nearby && !hasLocalSighting) {
-        return {SearchPhase::Lost, officerPosition};
+        return {ownRecord ? SearchPhase::Lost : SearchPhase::Observe, officerPosition};
     }
     // Each responding officer approaches the last confirmed location then
     // sweeps a different part of the immediate area.
     auto destination = nearby ? nearby->lastSeen : record.lastSeen;
     const auto age = nearby ? newestAge : now - record.seenAt;
-    if (age < 2300 || DistanceSquared(officerPosition, destination) > 64.0f) {
+    const auto arrivalRadius = driving ? 18.0f : 8.0f;
+    if (age < 2300 || DistanceSquared(officerPosition, destination) > arrivalRadius * arrivalRadius) {
         return {nearby ? SearchPhase::Respond : SearchPhase::LastSeen, destination};
     }
-    const auto section = ((officer >> 8) + age / 1400) % 4;
-    constexpr std::array<Point, 4> sweep{{{3, 0, 0}, {0, 3, 0}, {-3, 0, 0}, {0, -3, 0}}};
-    destination.x += sweep[section].x;
-    destination.y += sweep[section].y;
+    const auto section = (PatrolSlot(officer) + age / 1400) % 4;
+    constexpr std::array<Point, 4> sweep{{{1, 0, 0}, {0, 1, 0}, {-1, 0, 0}, {0, -1, 0}}};
+    const float radius = driving ? 20.0f : 3.0f;
+    destination.x += radius * sweep[section].x;
+    destination.y += radius * sweep[section].y;
     return {SearchPhase::Search, destination};
 }
 
@@ -122,7 +131,43 @@ float TrafficLimit(const TrafficInput& input) noexcept {
     if (input.sirenApproaching) {
         cap *= 0.74f;
     }
+    if (input.crashAhead) {
+        cap *= 0.58f;
+    }
     return std::min(input.nativeLimit, cap);
+}
+
+void CrashScenes::Observe(const CrashObservation& crash) noexcept {
+    auto& scene = m_Scenes[(crash.vehicle >> 8) % m_Scenes.size()];
+    const bool sameVehicle = scene.occupied && (scene.vehicle >> 8) == (crash.vehicle >> 8);
+    if (sameVehicle && (scene.vehicle != crash.vehicle || crash.speedSquared > 0.12f * 0.12f ||
+        DistanceSquared(scene.position, crash.position) > 16.0f)) {
+        scene = {};
+    }
+    if (crash.impactAt && crash.now - crash.impactAt < 900 && crash.impact >= 28.0f &&
+        crash.speedSquared >= 0.0f && crash.speedSquared <= 0.08f * 0.08f) {
+        scene = {crash.vehicle, crash.impactAt, crash.position, true};
+    }
+}
+
+bool CrashScenes::Ahead(Point position, Point forward, std::uint32_t now) const noexcept {
+    for (const auto& scene : m_Scenes) {
+        if (!scene.occupied || now - scene.impactAt >= 8000 || std::abs(scene.position.z - position.z) > 2.8f) {
+            continue;
+        }
+        const auto dx = scene.position.x - position.x;
+        const auto dy = scene.position.y - position.y;
+        const auto ahead = dx * forward.x + dy * forward.y;
+        const auto lateral = dx * forward.y - dy * forward.x;
+        if (ahead > 2.0f && ahead < 30.0f && std::abs(lateral) < 5.0f) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void CrashScenes::Reset() noexcept {
+    m_Scenes = {};
 }
 
 CityActivity AmbientActivity(unsigned hour, unsigned weekday, unsigned region, float wet, float fog) noexcept {
@@ -148,6 +193,29 @@ CityActivity AmbientActivity(unsigned hour, unsigned weekday, unsigned region, f
     pedestrians *= 1.0f - 0.29f * Unit(wet);
     cars *= 1.0f - 0.12f * Unit(fog);
     return {pedestrians, cars};
+}
+
+unsigned AttractorUsePercent(unsigned type, unsigned hour, unsigned weekday, unsigned region, float rain) noexcept {
+    if (hour >= 24 || weekday < 1 || weekday > 7 || region > 4) {
+        return 100;
+    }
+    const bool weekend = weekday >= 6;
+    const bool raining = Unit(rain) >= 0.15f;
+    switch (type) {
+    case 1: // Seats
+    case 8: // Parks
+    case 9: // Steps
+        return raining ? 35 : hour >= 11 && hour < 18 ? 100 : 65;
+    case 2: // Stops
+        return !weekend && ((hour >= 7 && hour < 10) || (hour >= 16 && hour < 19)) ? 100 : 60;
+    case 3: // Food
+        return (hour >= 11 && hour < 15) || (hour >= 17 && hour < 22) ||
+            (region == 3 && hour < 3) ? 100 : 55;
+    case 4: // Shelters
+        return raining ? 100 : 10;
+    default:
+        return 100;
+    }
 }
 
 std::uint8_t CombatAccuracy(std::uint8_t native, unsigned faction, float health, float distanceSquared,
