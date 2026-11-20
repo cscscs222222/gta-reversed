@@ -17,6 +17,11 @@ static constexpr auto DEFAULT_INI_FILENAME = "gta-reversed.ini";
 HMODULE s_HandleOfDLL{};
 static bool s_EnemyAIOnly{};
 
+static const IMAGE_NT_HEADERS32& GetExecutableHeader(const std::byte* executable) {
+    const auto& dosHeader = *reinterpret_cast<const IMAGE_DOS_HEADER*>(executable);
+    return *reinterpret_cast<const IMAGE_NT_HEADERS32*>(executable + dosHeader.e_lfanew);
+}
+
 static bool HasHoodlumSection(const IMAGE_NT_HEADERS32& header) {
     const auto* const sections = IMAGE_FIRST_SECTION(&header);
     return std::ranges::any_of(std::span{ sections, header.FileHeader.NumberOfSections }, [](const auto& section) {
@@ -50,6 +55,30 @@ static bool CanInstallHoodlumEnemyAI(const void* executable, const IMAGE_NT_HEAD
         });
 }
 
+// Ultimate ASI Loader calls this after LoadLibrary returns, outside the Windows loader lock.
+extern "C" __declspec(dllexport) void InitializeASI() {
+    if (!s_EnemyAIOnly || ReversibleHooks::RHManager::HasInstance()) {
+        return;
+    }
+
+    std::ofstream status{ "gta_reversed_hoodlum.log" };
+    const auto* const executable = reinterpret_cast<const std::byte*>(GetModuleHandleW(nullptr));
+    if (!CanInstallHoodlumEnemyAI(executable, GetExecutableHeader(executable))) {
+        status << "Hoodlum enemy AI was skipped because the executable or hook entries do not match.\n";
+        return;
+    }
+
+    try {
+        ReversibleHooks::RHManager::CreateInstance();
+        CTaskComplexKillPedOnFootArmed::InjectHooks(true);
+        CTaskSimpleGunControl::InjectHooks(true);
+        status << "Hoodlum enemy AI hooks installed.\n";
+    } catch (const std::exception& error) {
+        ReversibleHooks::RHManager::DestroyInstance();
+        status << "Failed to install Hoodlum enemy AI hooks: " << error.what() << '\n';
+    }
+}
+
 void LoadConfigurations() {
     // Firstly load the INI into the memory.
     g_ConfigurationMgr.Load(DEFAULT_INI_FILENAME);
@@ -65,12 +94,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         case DLL_PROCESS_ATTACH: {
         s_HandleOfDLL = hModule;
         const auto* const executable = reinterpret_cast<const std::byte*>(GetModuleHandleW(nullptr));
-        const auto& dosHeader = *reinterpret_cast<const IMAGE_DOS_HEADER*>(executable);
-        const auto& ntHeader = *reinterpret_cast<const IMAGE_NT_HEADERS32*>(executable + dosHeader.e_lfanew);
-        s_EnemyAIOnly = HasHoodlumSection(ntHeader);
-        if (s_EnemyAIOnly && !CanInstallHoodlumEnemyAI(executable, ntHeader)) {
-            MessageBoxW(nullptr, L"The Hoodlum build or enemy AI hooks do not match the supported layout.", L"gta_reversed", MB_ICONERROR | MB_OK);
-            return FALSE;
+        s_EnemyAIOnly = HasHoodlumSection(GetExecutableHeader(executable));
+        if (s_EnemyAIOnly) {
+            break;
         }
 
         // Fail if RenderWare has already been started
@@ -80,21 +106,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
 
         std::setlocale(LC_ALL, "en_US.UTF-8");
-
-        if (s_EnemyAIOnly) {
-            notsa::Logging::CreateInstance();
-            ReversibleHooks::RHManager::CreateInstance();
-            try {
-                CTaskComplexKillPedOnFootArmed::InjectHooks(true);
-                CTaskSimpleGunControl::InjectHooks(true);
-                NOTSA_LOG_INFO("Hoodlum enemy AI hooks installed.");
-            } catch (const std::exception& error) {
-                NOTSA_LOG_ERR("Failed to install Hoodlum enemy AI hooks: {}", error.what());
-                ReversibleHooks::RHManager::DestroyInstance();
-                return FALSE;
-            }
-            break;
-        }
 
         notsa::debug::DisplayConsole();
         notsa::debug::LoadSymbols(); // Used by logging
@@ -113,6 +124,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         break;
     }
     case DLL_PROCESS_DETACH: {
+        if (s_EnemyAIOnly) {
+            if (!lpReserved) {
+                ReversibleHooks::RHManager::DestroyInstance();
+            }
+            break;
+        }
         if (!notsa::Logging::HasInstance()) {
             break;
         }
@@ -121,9 +138,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
             ReversibleHooks::RHManager::DestroyInstance();
             notsa::Logging::DestroyInstance();
-            if (!s_EnemyAIOnly) {
-                notsa::debug::UnloadSymbols();
-            }
+            notsa::debug::UnloadSymbols();
         } else { // This is pretty much the only thing that's ever reached
             NOTSA_LOG_INFO("DLL_PROCESS_DETACH: Process is terminating, shutting down only what's necessary");
 
