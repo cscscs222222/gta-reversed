@@ -4,4 +4,6 @@
 
 namespace notsa {
 HMODULE GetDLLHandle();
+bool IsHoodlumExecutable();
+bool IsGameHeapReady();
 };

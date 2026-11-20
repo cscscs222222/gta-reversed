@@ -29,10 +29,31 @@ static bool HasHoodlumSection(const IMAGE_NT_HEADERS32& header) {
     });
 }
 
+static bool HasSupportedHoodlumLayout(const void* executable, const IMAGE_NT_HEADERS32& header) {
+    return reinterpret_cast<uintptr_t>(executable) == 0x400000 && header.FileHeader.Machine == IMAGE_FILE_MACHINE_I386
+        && header.FileHeader.TimeDateStamp == 0x427101CA && header.OptionalHeader.AddressOfEntryPoint == 0x424570
+        && header.OptionalHeader.SizeOfImage == 0x1177000;
+}
+
+bool notsa::IsHoodlumExecutable() {
+    static const bool isHoodlum = HasHoodlumSection(GetExecutableHeader(reinterpret_cast<const std::byte*>(GetModuleHandleW(nullptr))));
+    return isHoodlum;
+}
+
+bool notsa::IsGameHeapReady() {
+    if (!IsHoodlumExecutable()) {
+        return true;
+    }
+    static const bool supported = [] {
+        const auto* const executable = reinterpret_cast<const std::byte*>(GetModuleHandleW(nullptr));
+        return HasSupportedHoodlumLayout(executable, GetExecutableHeader(executable));
+    }();
+    // The Hoodlum executable's C runtime initializes this handle before using its heap.
+    return supported && *reinterpret_cast<void* const volatile*>(0xC9C2F4) != nullptr;
+}
+
 static bool CanInstallHoodlumEnemyAI(const void* executable, const IMAGE_NT_HEADERS32& header) {
-    if (reinterpret_cast<uintptr_t>(executable) != 0x400000 || header.FileHeader.Machine != IMAGE_FILE_MACHINE_I386
-        || header.FileHeader.TimeDateStamp != 0x427101CA || header.OptionalHeader.AddressOfEntryPoint != 0x424570
-        || header.OptionalHeader.SizeOfImage != 0x1177000) {
+    if (!HasSupportedHoodlumLayout(executable, header)) {
         return false;
     }
 
@@ -93,8 +114,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {
         s_HandleOfDLL = hModule;
-        const auto* const executable = reinterpret_cast<const std::byte*>(GetModuleHandleW(nullptr));
-        s_EnemyAIOnly = HasHoodlumSection(GetExecutableHeader(executable));
+        s_EnemyAIOnly = notsa::IsHoodlumExecutable();
         if (s_EnemyAIOnly) {
             break;
         }

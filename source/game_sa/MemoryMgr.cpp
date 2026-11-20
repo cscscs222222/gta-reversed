@@ -1,6 +1,11 @@
 #include "StdInc.h"
 
+#include <cstddef>
 #include <cstdlib>
+#include <limits>
+#include <new>
+
+#include "dllmain.h"
 
 #ifdef MEMORY_MGR_USE_MEMORY_HEAP
 static CRITICAL_SECTION   gstrucMemoryHeapCS;
@@ -446,19 +451,73 @@ void operator delete(void* memory) {
 #endif
 
 #ifndef NOTSA_STANDALONE
+namespace {
+// An ASI may load before the Hoodlum executable has initialized its C runtime heap.
+// Keep allocations made at that point identifiable after the game heap becomes available.
+struct alignas(std::max_align_t) StartupAllocation {
+    StartupAllocation* Next;
+};
+
+static SRWLOCK s_StartupAllocationsLock = SRWLOCK_INIT;
+static StartupAllocation* s_StartupAllocations{};
+
+static void* AllocateBeforeGameHeap(size_t size) {
+    const auto bytes = std::max(size, size_t{1});
+    if (bytes <= std::numeric_limits<size_t>::max() - sizeof(StartupAllocation)) {
+        if (auto* const storage = HeapAlloc(GetProcessHeap(), 0, sizeof(StartupAllocation) + bytes)) {
+            AcquireSRWLockExclusive(&s_StartupAllocationsLock);
+            auto* const allocation = ::new (storage) StartupAllocation{ s_StartupAllocations };
+            s_StartupAllocations = allocation;
+            ReleaseSRWLockExclusive(&s_StartupAllocationsLock);
+            return allocation + 1;
+        }
+    }
+    throw std::bad_alloc{};
+}
+
+static bool FreeBeforeGameHeapAllocation(void* p) noexcept {
+    StartupAllocation* found{};
+    AcquireSRWLockExclusive(&s_StartupAllocationsLock);
+    for (auto** link = &s_StartupAllocations; *link; link = &(*link)->Next) {
+        if (*link + 1 == p) {
+            found = *link;
+            *link = found->Next;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&s_StartupAllocationsLock);
+    if (found) {
+        HeapFree(GetProcessHeap(), 0, found);
+    }
+    return found != nullptr;
+}
+}
+
 void* operator new(size_t size) {
+    if (!notsa::IsGameHeapReady()) {
+        return AllocateBeforeGameHeap(size);
+    }
     return plugin::CallAndReturn<void*, 0x82119A, size_t>(size);
 }
 
 void* operator new[](size_t size) {
+    if (!notsa::IsGameHeapReady()) {
+        return AllocateBeforeGameHeap(size);
+    }
     return plugin::CallAndReturn<void*, 0x821195, size_t>(size);
 }
 
 void operator delete(void* p) {
+    if (notsa::IsHoodlumExecutable() && (!p || FreeBeforeGameHeapAllocation(p) || !notsa::IsGameHeapReady())) {
+        return;
+    }
     plugin::Call<0x8214BD, void*>(p);
 }
 
 void operator delete[](void* p) {
+    if (notsa::IsHoodlumExecutable() && (!p || FreeBeforeGameHeapAllocation(p) || !notsa::IsGameHeapReady())) {
+        return;
+    }
     plugin::Call<0x8213AE, void*>(p);
 }
 #endif
