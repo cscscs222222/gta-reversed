@@ -125,6 +125,31 @@ float TrafficLimit(const TrafficInput& input) noexcept {
     return std::min(input.nativeLimit, cap);
 }
 
+CityActivity AmbientActivity(unsigned hour, unsigned weekday, unsigned region, float wet, float fog) noexcept {
+    if (hour >= 24 || weekday < 1 || weekday > 7 || region > 4) {
+        return {1.0f, 1.0f};
+    }
+    const bool weekend = weekday >= 6;
+    const bool rushHour = !weekend && ((hour >= 7 && hour < 10) || (hour >= 16 && hour < 19));
+    const bool sanFierro = region == 2;
+    const bool lasVenturas = region == 3;
+    const bool desert = region == 4;
+    const bool night = hour >= 22 || hour < 6;
+    const bool nightlife = lasVenturas && (hour >= 19 || hour < 3);
+    float pedestrians = night && !nightlife ? 0.62f : 1.0f;
+    float cars = night && !nightlife ? 0.73f : rushHour ? 1.0f : 0.9f;
+    if (desert) {
+        pedestrians *= 0.78f;
+        cars *= rushHour ? 0.94f : 0.88f;
+    }
+    if (sanFierro && weekend && hour < 10) {
+        pedestrians *= 0.88f;
+    }
+    pedestrians *= 1.0f - 0.29f * Unit(wet);
+    cars *= 1.0f - 0.12f * Unit(fog);
+    return {pedestrians, cars};
+}
+
 std::uint8_t CombatAccuracy(std::uint8_t native, unsigned faction, float health, float distanceSquared,
     float wet, float fog, unsigned hour) noexcept {
     if (native == 0 || native > 100 || faction < 6 || faction > 16 || !(health > 0.0f) ||

@@ -41,6 +41,8 @@ using SeekPoint = ulw::Point*(__thiscall*)(void*, ulw::Point*, const void*);
 using WantedPointer = const void*(__cdecl*)(int);
 using TrafficSpeed = float(__cdecl*)(void*);
 using CarAI = void(__cdecl*)(void*);
+using PopulationUpdate = void(__cdecl*)(bool);
+using RandomCars = void(__cdecl*)();
 using FireWeapon = bool(__thiscall*)(void*, void*, const void*, const void*, const void*, const void*, const void*);
 using ProcessWheel = void(__thiscall*)(void*, void*, void*, void*, void*, int, float, float, float,
     std::int8_t, float*, std::int32_t*, std::uint16_t);
@@ -185,6 +187,50 @@ bool StreetActive(std::uint32_t now) noexcept {
 
 float Fog() noexcept {
     return std::max(GameValue<float>(0xC81300), GameValue<float>(0xC812FC));
+}
+
+ulw::CityActivity CityActivity() noexcept {
+    if (GameValue<std::int32_t>(0xB72914) != 0 || !StreetActive(GameValue<std::uint32_t>(0xB7CB84))) {
+        return {1.0f, 1.0f};
+    }
+    return ulw::AmbientActivity(GameValue<std::uint8_t>(0xB70153), GameValue<std::uint8_t>(0xB7014E),
+        GameValue<std::uint16_t>(0xC81314), GameValue<float>(0xC81308), Fog());
+}
+
+class ScopedCivilianDensity {
+public:
+    ScopedCivilianDensity(std::uintptr_t address, float scale) noexcept :
+        m_Count(*reinterpret_cast<float*>(address)),
+        m_Original(m_Count),
+        m_Scaled(std::isfinite(m_Original) && m_Original > 0.0f ? m_Original * scale : m_Original) {
+        if (m_Scaled < m_Original) {
+            m_Count = m_Scaled;
+        }
+    }
+
+    ~ScopedCivilianDensity() {
+        if (m_Scaled < m_Original && m_Count == m_Scaled) {
+            m_Count = m_Original;
+        }
+    }
+
+    ScopedCivilianDensity(const ScopedCivilianDensity&) = delete;
+    ScopedCivilianDensity& operator=(const ScopedCivilianDensity&) = delete;
+
+private:
+    float& m_Count;
+    float m_Original;
+    float m_Scaled;
+};
+
+void __cdecl OnPopulation(bool generate) noexcept {
+    const ScopedCivilianDensity density(0xC0BC40, generate ? CityActivity().pedestrians : 1.0f);
+    GameFunction<PopulationUpdate>(0x616650)(generate);
+}
+
+void __cdecl OnRandomCars() noexcept {
+    const ScopedCivilianDensity density(0xC0BC30, CityActivity().cars);
+    GameFunction<RandomCars>(0x4341C0)();
 }
 
 bool PedOnFoot(const void* ped) noexcept {
@@ -581,6 +627,15 @@ bool InstallCombat() noexcept {
         PatchCalls({0x61ECCD}, 0x742300, reinterpret_cast<std::uintptr_t>(&OnWeaponFire));
 }
 
+void InstallCity() noexcept {
+    const bool pedestrians = Matches(0x616650, Entry{0x0F, 0xBF, 0x05, 0x14, 0x13, 0xC8, 0, 0x83}) &&
+        PatchCalls({0x53C030}, 0x616650, reinterpret_cast<std::uintptr_t>(&OnPopulation));
+    const bool cars = Matches(0x4341C0, Entry{0xA0, 0x51, 0xF8, 0xB5, 0, 0x84, 0xC0, 0x74}) &&
+        PatchCalls({0x53C1C1}, 0x4341C0, reinterpret_cast<std::uintptr_t>(&OnRandomCars));
+    Log(pedestrians ? "Installed: ambient pedestrian schedules." : "Skipped: population function differs.");
+    Log(cars ? "Installed: ambient car schedules." : "Skipped: car generation function differs.");
+}
+
 void Install(const std::filesystem::path& config) noexcept {
     if (!SupportedImage()) {
         Log("Skipped: this executable does not match the supported Hoodlum 1.0 US layout.");
@@ -599,7 +654,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.2.0");
+    Log("Ultimate Living World 0.3.0");
     if (GetPrivateProfileIntW(L"Modules", L"Civilian", 1, config.c_str())) {
         const auto civilian = InstallCivilian();
         Log(civilian ? "Installed: civilian gunshot reactions." : "Skipped: civilian dispatcher differs.");
@@ -619,6 +674,9 @@ void Install(const std::filesystem::path& config) noexcept {
     }
     if (GetPrivateProfileIntW(L"Modules", L"Combat", 1, config.c_str())) {
         Log(InstallCombat() ? "Installed: police and gang aiming profiles." : "Skipped: weapon function differs.");
+    }
+    if (GetPrivateProfileIntW(L"Modules", L"City", 1, config.c_str())) {
+        InstallCity();
     }
 }
 

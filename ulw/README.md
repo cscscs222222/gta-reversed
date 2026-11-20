@@ -1,4 +1,4 @@
-# Ultimate Living World 0.2.0
+# Ultimate Living World 0.3.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
@@ -9,6 +9,7 @@ Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 | Trafik | Sivil sürücüler yağmur, sis, gece, yakın zamanda çarpışma veya arkadan yaklaşan siren nedeniyle yavaşlayabilir. Mevcut kırmızı ışık ve trafik hız sınırları uygulanmaya devam eder. |
 | Otomobiller | Islak yol ve ağır hasar yol tutuşunu azaltır. Uzun süreli sert frenleme fren etkisini, ağır hasar da aracın çekişini düşürebilir. |
 | Çatışma | Uygun serbest dolaşım karşılaşmalarında oyuncuya ateş eden polis ve çete üyelerinin isabeti mesafe, aydınlık, hava ve can durumuna göre değişir. Açık havada yakın çatışmalar zorlaşır. |
+| Şehir | Trafik ve sivil yaya yoğunluğu saat, gün, bölge ve hava durumuna göre değişir. Las Venturas geceleri daha hareketli kalır. |
 
 ## Test kopyasına kurulum
 
@@ -20,7 +21,7 @@ Paketi kaldırmak için oyun kapalıyken kopyaladığın iki dosyayı kaldır. `
 
 ## Kontroller
 
-Windows derlemesi sivil olay bütçesi, tepki belleği ve yangın, polisin görüş kaybı ve ekip içi bildirimleri, trafik limitleri, fren ısısı, yol tutuşu ve isabet profilleri için otomatik testleri çalıştırır. Ayrıca Windows test sürecinde ASI yüklenir ve oyun olmayan bir yürütülebilir dosyada bağlantıların devre dışı kaldığı kontrol edilir.
+Windows derlemesi sivil olay bütçesi, tepki belleği ve yangın, polisin görüş kaybı ve ekip içi bildirimleri, trafik limitleri, fren ısısı, yol tutuşu, isabet profilleri ve şehir yoğunluğu için otomatik testleri çalıştırır. Ayrıca Windows test sürecinde ASI yüklenir ve oyun olmayan bir yürütülebilir dosyada bağlantıların devre dışı kaldığı kontrol edilir.
 
 Oyun içi doğrulama için serbest dolaşımda yakındaki sivillerin tepki süresini, yaya polislerin bir köşeden sonra ne yöne baktığını ve ıslak zeminde fren mesafesini karşılaştır. Sonra bir hikâye görevini başlat. Görev bayrakları ve ara sahne durumları, yeni davranışları sınırlamak için kullanılır. Görevlerin, save yüklemenin ve diğer eklentilerle birlikte çalışmanın oyun içi testleri henüz yapılmadı.
 
@@ -30,4 +31,4 @@ Günlük NPC kaçışı, polis araması ve trafik hız sınırlaması sayımlar�
 
 `build.cmd` var olan MSVC x86 ortamını kullanır ve paketi `bin/ulw/dist` altında üretir. GitHub Actions’taki **Build** iş akışı aynı adımları çalıştırır. Başarılı çalışmanın **Artifacts** bölümünde **UltimateLivingWorld** paketi çıkar. Arşivde ASI, INI, doğrulama betiği ve bu kılavuz bulunur.
 
-Planlanan şehir rutinleri, ekonomi, polis araçları ve helikopter taktikleri, fizik kapsamının diğer taşıtlara genişletilmesi ve Ultimate Chaos Missions entegrasyonu henüz tamamlanmadı.
+Planlanan bireysel NPC rutinleri, dinamik şehir olayları, ekonomi, polis araçları ve helikopter taktikleri, fizik kapsamının diğer taşıtlara genişletilmesi ve Ultimate Chaos Missions entegrasyonu henüz tamamlanmadı.

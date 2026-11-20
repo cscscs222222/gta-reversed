@@ -151,6 +151,19 @@ void TestCombat() {
     Check(ulw::CombatAccuracy(0, 7, 100, 36, 0, 0, 12) == 0, "intentional misses must remain native");
 }
 
+void TestCityActivity() {
+    const auto laRush = ulw::AmbientActivity(8, 3, 1, 0, 0);
+    const auto laLate = ulw::AmbientActivity(23, 3, 1, 0, 0);
+    const auto vegasLate = ulw::AmbientActivity(23, 3, 3, 0, 0);
+    const auto weekend = ulw::AmbientActivity(8, 7, 1, 0, 0);
+    const auto foggyDesert = ulw::AmbientActivity(8, 3, 4, 0, 1);
+    const auto wetRush = ulw::AmbientActivity(8, 3, 1, 1, 0);
+    Check(laRush.cars > weekend.cars && laRush.cars > laLate.cars, "traffic schedules should distinguish rush hour");
+    Check(vegasLate.pedestrians > laLate.pedestrians && vegasLate.cars > laLate.cars, "Las Venturas should stay busier at night");
+    Check(foggyDesert.cars < laRush.cars && wetRush.pedestrians < laRush.pedestrians, "weather should reduce outdoor activity");
+    Check(ulw::AmbientActivity(0, 0, 1, 1, 1).cars == 1, "uninitialized clock should use native activity");
+}
+
 void TestLoader(const std::filesystem::path& asi) {
     const auto logPath = asi.parent_path() / L"UltimateLivingWorld.log";
     std::error_code error;
@@ -183,6 +196,8 @@ int wmain(int argc, wchar_t** argv) {
         std::puts("Street systems: police search and reports, traffic limits, wet grip and brake fade passed.");
         TestCombat();
         std::puts("Combat: aiming profiles, injury, weather and native accuracy limits passed.");
+        TestCityActivity();
+        std::puts("City: rush hour, regional nightlife and weather schedules passed.");
         if (argc == 2) {
             TestLoader(argv[1]);
             std::puts("ASI: load and InitializeASI passed. The non-game process was rejected.");

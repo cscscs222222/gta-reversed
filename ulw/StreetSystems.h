@@ -56,6 +56,13 @@ struct TrafficInput {
 };
 float TrafficLimit(const TrafficInput& input) noexcept;
 
+struct CityActivity {
+    float pedestrians;
+    float cars;
+};
+
+CityActivity AmbientActivity(unsigned hour, unsigned weekday, unsigned region, float wet, float fog) noexcept;
+
 std::uint8_t CombatAccuracy(std::uint8_t native, unsigned faction, float health, float distanceSquared,
     float wet, float fog, unsigned hour) noexcept;
 
