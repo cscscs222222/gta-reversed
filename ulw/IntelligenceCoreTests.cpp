@@ -2,6 +2,7 @@
 #include <windows.h>
 
 #include "IntelligenceCore.h"
+#include "MissionState.h"
 #include "StreetSystems.h"
 
 #include <cstdio>
@@ -290,6 +291,47 @@ void TestLoader(const std::filesystem::path& asi) {
         "a non-game process should reject the hook before touching any game address");
 }
 
+void TestMissionProtection() {
+    using ulw::MissionPhase;
+    using ulw::MissionProfile;
+
+    ulw::MissionState state;
+    Check(!state.AllowsWorld(), "world systems should wait for engine initialization");
+    Check(state.Update({100, true}) && state.AllowsWorld(), "validated free roam should enable world systems");
+    const auto train = ulw::NormalizeMissionName({'s', 'm', 'o', 'k', 'e', '3', 0, 0});
+    const auto pursuit = ulw::NormalizeMissionName({'D', 'R', 'U', 'G', 'S', '1', 0, 0});
+    const auto flight = ulw::NormalizeMissionName({'Z', 'E', 'R', 'O', '2', 0, 0, 0});
+    const auto finale = ulw::NormalizeMissionName({'f', 'i', 'n', 'a', 'l', 'e', 'c', 0});
+    Check(ulw::NormalizeMissionName({'n','o','n','a','m','e',0,0})[0] == 0 &&
+        ulw::NormalizeMissionName({'a','\n','b',0,0,0,0,0})[1] == 0, "script identifiers need safe logging");
+
+    state.Update({200, true, false, true, false, false, train});
+    Check(state.Profile() == MissionProfile::TrainChase && !state.AllowsWorld(),
+        "loaded train mission thread must protect the world without the global mission flag");
+    state.Update({500, true, true, true, false, false, pursuit});
+    Check(state.Profile() == MissionProfile::ScriptedPursuit, "Just Business should use scripted pursuit protection");
+    state.Update({700, true, true, true, false, false, flight});
+    Check(state.Profile() == MissionProfile::RemoteFlight, "Supply Lines should use remote flight protection");
+    state.Update({900, true, true, true, true, false, finale});
+    Check(state.Profile() == MissionProfile::Finale && state.Phase() == MissionPhase::Cutscene,
+        "cutscenes must take precedence and retain the active finale profile");
+    state.Update({1000, true});
+    Check(state.Phase() == MissionPhase::Recovery && !state.AllowsWorld(),
+        "cleanup protection should remain after the last active mission and cutscene disappear");
+    state.Update({3499, true});
+    Check(!state.AllowsWorld(), "the finale must get its full cleanup delay");
+    state.Update({3500, true});
+    Check(state.AllowsWorld() && !state.Name()[0], "free roam must resume and forget the old mission name");
+    state.Update({3600, true, true});
+    Check(state.Phase() == MissionPhase::Mission, "the native mission flag must protect unnamed missions");
+    state.Update({3650, true, false, false, false, true});
+    Check(state.Phase() == MissionPhase::Activity && !state.AllowsWorld(), "scripted activities must suspend ambient behavior");
+    state.Update({200, false});
+    Check(state.Phase() == MissionPhase::Loading && !state.AllowsWorld(), "a clock rewind should begin a fresh lifecycle");
+    state.Update({240, true});
+    Check(state.AllowsWorld(), "starting a new game must not inherit the old mission cooldown");
+}
+
 }
 
 int wmain(int argc, wchar_t** argv) {
@@ -302,6 +344,8 @@ int wmain(int argc, wchar_t** argv) {
         std::puts("Street systems: police search and reports, traffic limits, wet grip and brake fade passed.");
         TestAirSupportAndRoadblocks();
         std::puts("Police support: air and ground reports, search routes and roadblock placement passed.");
+        TestMissionProtection();
+        std::puts("Campaign: native and script mission signals, special profiles, cleanup, and reset passed.");
         TestCombat();
         std::puts("Combat: aiming profiles, injury, weather and native accuracy limits passed.");
         TestCityActivity();

@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include "IntelligenceCore.h"
+#include "MissionState.h"
 #include "StreetSystems.h"
 
 #include <algorithm>
@@ -33,6 +34,11 @@ constexpr std::uintptr_t ActiveCamera = 0xB6F028;
 constexpr std::uintptr_t ScriptSpace = 0xA49960;
 constexpr std::uintptr_t MissionFlagOffset = 0xA476AC;
 constexpr std::size_t MainScriptLimit = 200000;
+constexpr std::size_t MissionScriptLimit = 69000;
+constexpr std::uintptr_t ActiveScriptList = 0xA8B42C;
+constexpr std::uintptr_t ScriptPool = 0xA8B430;
+constexpr std::size_t ScriptSlotSize = 0xE0;
+constexpr std::size_t ScriptCount = 96;
 
 using ShotResponse = void(__thiscall*)(void* handler, const void* shot, void* activeTask, void* simplestTask);
 using PedReference = int(__cdecl*)(const void* ped);
@@ -53,12 +59,14 @@ using ChaseNode = bool(__cdecl*)(void*, float, float, float, const void*);
 using BlockSteering = void(__cdecl*)(void*, const void*, float, float, float, float, float*, float*, float*, bool*);
 using PopulationUpdate = void(__cdecl*)(bool);
 using RandomCars = void(__cdecl*)();
+using ProcessScripts = void(__cdecl*)();
 using AddAttractorPed = bool(__cdecl*)(int, const void*, ulw::Point, void*, int);
 using FireWeapon = bool(__thiscall*)(void*, void*, const void*, const void*, const void*, const void*, const void*);
 using ProcessWheel = void(__thiscall*)(void*, void*, void*, void*, void*, int, float, float, float,
     std::int8_t, float*, std::int32_t*, std::uint16_t);
 
 ulw::IntelligenceCore s_Core{};
+ulw::MissionState s_Missions{};
 ulw::PoliceSearch s_Police{};
 ulw::RoadblockAttempts s_Roadblocks{};
 ulw::CrashScenes s_Crashes{};
@@ -95,6 +103,8 @@ bool s_Diagnostics{};
 bool s_WasActive{};
 bool s_StreetActive{};
 bool s_UseSightingForRoadblocks{};
+bool s_MissionObserver{};
+bool s_ExecutingScripts{};
 std::uint32_t s_StreetTime{};
 
 template<typename T>
@@ -175,14 +185,23 @@ bool SupportedImage() noexcept {
         header.OptionalHeader.SizeOfImage == 0x1177000;
 }
 
+ulw::MissionObservation NativeMissionState(std::uint32_t now) noexcept {
+    const auto offset = GameValue<std::uint32_t>(MissionFlagOffset);
+    const bool scriptReady = offset != 0 && offset <= MainScriptLimit - sizeof(std::uint32_t);
+    const bool mission = GameValue<std::uint8_t>(0xA444B1) != 0 ||
+        (scriptReady && GameValue<std::uint32_t>(ScriptSpace + offset) != 0);
+    const bool cutscene = GameValue<std::uint8_t>(0xB5F851) != 0 || GameValue<std::uint8_t>(0xB5F852) != 0;
+    const bool activity = GameValue<std::uint8_t>(0xA444A8) != 0 || GameValue<std::uint8_t>(0xA43088) == 1;
+    return {now, scriptReady, mission, false, cutscene, activity, {}};
+}
+
 bool FreeRoam() noexcept {
-    if (GameValue<std::uint8_t>(0xA444B1) || GameValue<std::uint8_t>(0xB5F852) ||
+    if (s_ExecutingScripts || (s_MissionObserver && !s_Missions.AllowsWorld()) ||
         GameValue<std::uint8_t>(0xB7CB48) || GameValue<std::uint8_t>(0xB7CB49)) {
         return false;
     }
-    const auto offset = GameValue<std::uint32_t>(MissionFlagOffset);
-    return offset != 0 && offset <= MainScriptLimit - sizeof(std::uint32_t) &&
-        GameValue<std::uint32_t>(ScriptSpace + offset) == 0;
+    const auto state = NativeMissionState(0);
+    return state.scriptReady && !state.missionFlag && !state.cutscene && !state.activity;
 }
 
 ulw::Point EntityPosition(const void* entity) noexcept {
@@ -199,19 +218,97 @@ ulw::Point EntityForward(const void* entity) noexcept {
     return {-std::sin(heading), std::cos(heading), 0.0f};
 }
 
+void ClearStreetMemory() noexcept {
+    s_Police.Reset();
+    s_Roadblocks.Reset();
+    s_AirPatrols = {};
+    s_RoadPhysics.Reset();
+    s_Crashes.Reset();
+    s_Sirens = {};
+}
+
 bool StreetActive(std::uint32_t now) noexcept {
     const auto active = FreeRoam();
     if ((s_StreetActive && !active) || now < s_StreetTime) {
-        s_Police.Reset();
-        s_Roadblocks.Reset();
-        s_AirPatrols = {};
-        s_RoadPhysics.Reset();
-        s_Crashes.Reset();
-        s_Sirens = {};
+        ClearStreetMemory();
     }
     s_StreetActive = active;
     s_StreetTime = now;
     return active;
+}
+
+void InspectMissionThread(ulw::MissionObservation& state) noexcept {
+    auto address = GameValue<std::uintptr_t>(ActiveScriptList);
+    for (std::size_t i = 0; address != 0 && i < ScriptCount; ++i) {
+        // Foreign ASIs can own extra script objects. Rely on the native
+        // flags whenever the linked list leaves the engine's script pool.
+        if (address < ScriptPool || address >= ScriptPool + ScriptSlotSize * ScriptCount ||
+            (address - ScriptPool) % ScriptSlotSize != 0) {
+            return;
+        }
+        const auto* const script = reinterpret_cast<const void*>(address);
+        if (Read<std::uint8_t>(script, 0xC4) && !Read<std::uint8_t>(script, 0xC7)) {
+            const auto base = Read<std::uintptr_t>(script, 0x10);
+            const bool missionBuffer = base >= ScriptSpace + MainScriptLimit &&
+                base < ScriptSpace + MainScriptLimit + MissionScriptLimit;
+            if (missionBuffer || Read<std::uint8_t>(script, 0xDC)) {
+                state.missionThread = true;
+                state.name = ulw::NormalizeMissionName(Read<std::array<char, 8>>(script, 0x08));
+                return;
+            }
+        }
+        address = Read<std::uintptr_t>(script);
+    }
+}
+
+void LogMissionState() noexcept {
+    const auto& name = s_Missions.Name();
+    const char* const label = name[0] ? name.data() : "unnamed";
+    char message[160]{};
+    switch (s_Missions.Phase()) {
+    case ulw::MissionPhase::Loading:
+        Log("World systems waiting for the mission script.");
+        return;
+    case ulw::MissionPhase::FreeRoam:
+        Log("Free roam: world systems resumed.");
+        return;
+    case ulw::MissionPhase::Mission:
+        std::snprintf(message, sizeof(message), "Mission protection: %s (%s).", label,
+            ulw::MissionProfileName(s_Missions.Profile()));
+        break;
+    case ulw::MissionPhase::Cutscene:
+        std::snprintf(message, sizeof(message), "Cutscene protection: %s.", label);
+        break;
+    case ulw::MissionPhase::Activity:
+        Log("Scripted activity: world systems suspended.");
+        return;
+    case ulw::MissionPhase::Recovery:
+        std::snprintf(message, sizeof(message), "Mission cleanup: %s. World systems briefly suspended.", label);
+        break;
+    }
+    Log(message);
+}
+
+void __cdecl OnProcessScripts() noexcept {
+    s_ExecutingScripts = true;
+    GameFunction<ProcessScripts>(0x46A000)();
+    s_ExecutingScripts = false;
+
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    auto state = NativeMissionState(now);
+    if (state.scriptReady) {
+        InspectMissionThread(state);
+    }
+    const bool changed = s_Missions.Update(state);
+    if (changed && !s_Missions.AllowsWorld()) {
+        ClearStreetMemory();
+        s_Core.Reset();
+        s_WasActive = false;
+        s_StreetActive = false;
+    }
+    if (changed && s_Diagnostics) {
+        LogMissionState();
+    }
 }
 
 float Fog() noexcept {
@@ -907,6 +1004,14 @@ bool InstallRoadblocks() noexcept {
         PatchCalls({0x462BFF}, 0x460EE0, reinterpret_cast<std::uintptr_t>(&OnRoadblockNode));
 }
 
+bool InstallMissionObserver() noexcept {
+    return Matches(0x46A000, Entry{0xA0, 0x88, 0x30, 0xA4, 0x00, 0x83, 0xEC, 0x10}) &&
+        Matches(0x46A1D1, std::array<std::uint8_t, 6>{0x8B, 0x35, 0x2C, 0xB4, 0xA8, 0x00}) &&
+        Matches(0x46A226, std::array<std::uint8_t, 6>{0x38, 0x9F, 0xC4, 0x00, 0x00, 0x00}) &&
+        Matches(0x469F60, std::array<std::uint8_t, 6>{0x8A, 0x86, 0xDC, 0x00, 0x00, 0x00}) &&
+        PatchCalls({0x53BFC7}, 0x46A000, reinterpret_cast<std::uintptr_t>(&OnProcessScripts));
+}
+
 bool InstallTraffic() noexcept {
     if (!Matches(0x434400, Entry{0x83, 0xEC, 0x24, 0x56, 0x8B, 0x74, 0x24, 0x2C}) ||
         !PatchCalls({0x4347C3, 0x435302}, 0x434400, reinterpret_cast<std::uintptr_t>(&OnTrafficSpeed))) {
@@ -962,7 +1067,10 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.5.0");
+    Log("Ultimate Living World 0.6.0");
+    s_MissionObserver = InstallMissionObserver();
+    Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
+        : "Skipped: mission observer differs. Native mission flags still protect the campaign.");
     if (GetPrivateProfileIntW(L"Modules", L"Civilian", 1, config.c_str())) {
         const auto civilian = InstallCivilian();
         Log(civilian ? "Installed: civilian gunshot reactions." : "Skipped: civilian dispatcher differs.");

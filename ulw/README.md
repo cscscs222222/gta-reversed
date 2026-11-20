@@ -1,4 +1,4 @@
-# Ultimate Living World 0.5.0
+# Ultimate Living World 0.6.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
@@ -12,6 +12,7 @@ Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 | Otomobiller | Islak yol ve ağır hasar yol tutuşunu azaltır. Uzun süreli sert frenleme fren etkisini, ağır hasar da aracın çekişini düşürebilir. |
 | Çatışma | Uygun serbest dolaşım karşılaşmalarında oyuncuya ateş eden polis ve çete üyelerinin isabeti mesafe, aydınlık, hava ve can durumuna göre değişir. Açık havada yakın çatışmalar zorlaşır. |
 | Şehir | Trafik ve sivil yaya yoğunluğu saat, gün, bölge ve hava durumuna göre değişir. Mevcut durakların, bankların, yiyecek noktalarının ve yağmur barınaklarının kullanım sıklığı bu koşullara uyarlanır. |
+| Görevler | ULW görev işaretlerini ve motorun çalışan görev betiğini izler. Görevlerde, ara sahnelerde ve görev sonu toparlanma sırasında yeni dünya davranışlarını askıya alır. |
 
 ## Test kopyasına kurulum
 
@@ -21,9 +22,22 @@ Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
 Paketi kaldırmak için oyun kapalıyken kopyaladığın iki dosyayı kaldır. `Enabled=0` tüm eklentiyi devre dışı bırakır. `[Modules]` bölümünde bir sistemin değerini `0` yaparak sonraki açılışta o sistemi kapatabilirsin.
 
+## Ultimate Chaos Missions
+
+Test kopyasında zaten kullandığın Chaos Missions kampanyasıyla aynı kurulumu yap. Pakette görev dosyası yoktur. `Verify-Game.ps1`, orijinal `main.scm` ile tanınan Chaos Missions Zor ve Acımasız sürümlerini ayırt eder ve görev bloklarının motor sınırlarını kontrol eder. Farklı bir kampanya dosyası da oyun içindeki genel görev korumasını kullanır.
+
+| Oyunda açılacak görev | Günlükte beklenen görev adı |
+| --- | --- |
+| Wrong Side of the Tracks | `SMOKE3` |
+| Just Business | `DRUGS1` |
+| Supply Lines... | `ZERO2` |
+| End of the Line | Üç aşama için `FINALEA`, `FINALEB`, `FINALEC` |
+
+Görevi başlattığında `scripts\UltimateLivingWorld.log` içinde `Mission protection` veya `Cutscene protection` satırını ara. Görev sona erince kısa bir beklemenin ardından `Free roam: world systems resumed.` görünür. Bu süre, tren kovalamacası, betikli araç takibi, uzaktan kumandalı uçuş ve final görevleri için uzatılır.
+
 ## Kontroller
 
-Windows derlemesi sivil tepkileri, hava ve kara devriyeleri arasındaki konum paylaşımını, arama rotalarını, barikat adaylarını, trafik kazası algılamayı, fren ve tutuşu, isabet profillerini ve kentteki kullanım saatlerini otomatik olarak test eder. Windows test süreci ASI’yi yükler ve bağlantıların oyun dışı bir süreçte devre dışı kaldığını kontrol eder.
+Windows derlemesi sivil tepkileri, hava ve kara devriyeleri arasındaki konum paylaşımını, arama rotalarını, barikat adaylarını, trafik kazası algılamayı, fren ve tutuşu, isabet profillerini, kentteki kullanım saatlerini ve serbest dolaşımla görevler arasındaki geçişleri otomatik olarak test eder. Windows test süreci ASI’yi yükler ve bağlantıların oyun dışı bir süreçte devre dışı kaldığını kontrol eder.
 
 Oyun içi doğrulama için gece serbest dolaşımda helikopter takibini başlat ve kapalı bir alana girerek görüş hattını kes. Araçla kovalamacada açık görüş alanında barikatların yerleşimini ve köşeyi döndükten sonra polislerin yönünü karşılaştır. Arama ve dinamik barikat kuralları serbest dolaşımda çalışır. Görevlerin, kayıt yüklemenin ve diğer eklentilerle birlikte çalışmanın oyun içi testleri bekliyor.
 
@@ -33,4 +47,4 @@ Günlük oyun zamanı ilerledikçe NPC kaçışı, devriye rotaları, hava arama
 
 `build.cmd` var olan MSVC x86 ortamını kullanır ve paketi `bin/ulw/dist` altında üretir. GitHub Actions’taki **Build** iş akışı aynı adımları çalıştırır. Başarılı çalışmanın **Artifacts** bölümünde **UltimateLivingWorld** paketi çıkar. Arşivde ASI, INI, doğrulama betiği ve bu kılavuz bulunur.
 
-Bireysel NPC iş ve ev rotaları, yeni şehir etkinlikleri, ekonomi, ayrıntılı yakalama taktikleri, diğer taşıtların fiziği ve Ultimate Chaos Missions entegrasyonu tam sürüm için bekliyor.
+Bireysel NPC iş ve ev rotaları, yeni şehir etkinlikleri, ekonomi, ayrıntılı yakalama taktikleri, diğer taşıtların fiziği ve Chaos Missions görevlerinin oyun içi uyumluluk testleri tam sürüm için bekliyor.
