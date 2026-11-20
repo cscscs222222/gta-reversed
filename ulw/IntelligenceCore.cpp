@@ -52,6 +52,20 @@ Decision IntelligenceCore::ReactToShot(const Shot& shot) noexcept {
     return {memory.state, memory.focus};
 }
 
+Decision IntelligenceCore::ReactToHazard(const Shot& hazard) noexcept {
+    if (!(hazard.distanceSquared >= 0.0f && hazard.distanceSquared <= 18.0f * 18.0f) ||
+        (!hazard.visible && hazard.distanceSquared > 6.0f * 6.0f)) {
+        return {Response::Vanilla, {}};
+    }
+    auto& memory = m_Memory[(hazard.pedRef >> 8) % m_Memory.size()];
+    if (memory.occupied && memory.pedRef == hazard.pedRef && hazard.now - memory.seenAt < 850) {
+        return {Response::Vanilla, {}};
+    }
+    const auto response = hazard.distanceSquared <= 7.0f * 7.0f ? Response::Panic : Response::Flee;
+    memory = {hazard.pedRef, hazard.now, hazard.source, response, true};
+    return {response, hazard.source};
+}
+
 void IntelligenceCore::Reset() noexcept {
     m_Memory = {};
     m_Frame = 0;

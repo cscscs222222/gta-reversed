@@ -37,6 +37,7 @@ public:
 
     bool TakeBudget(std::uint32_t frame) noexcept;
     Decision ReactToShot(const Shot& shot) noexcept;
+    Decision ReactToHazard(const Shot& hazard) noexcept;
     void Reset() noexcept;
 
 private:
