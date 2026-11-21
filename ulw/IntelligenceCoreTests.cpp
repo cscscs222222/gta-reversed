@@ -2,6 +2,7 @@
 #include <windows.h>
 
 #include "IntelligenceCore.h"
+#include "CityLife.h"
 #include "MissionState.h"
 #include "PoliceInteractions.h"
 #include "StreetSystems.h"
@@ -224,6 +225,70 @@ void TestPoliceInteractions() {
         !surrender.Update(2000, false, true), "committed or released input must not repeat the arrest");
     Check(!surrender.Update(2200, true, true) && !surrender.Update(3000, true, true),
         "a long interruption must restart the surrender timer");
+}
+
+void TestCityLife() {
+    using ulw::CityVenue;
+    using ulw::CrashReaction;
+    using ulw::ResidentAction;
+    constexpr std::uint16_t routineSeed = 0;
+    Check(ulw::PreferredVenue(routineSeed, 8, 2, 1, 0) == CityVenue::BusStop &&
+        ulw::PreferredVenue(routineSeed, 8, 2, 1, 0.7f) == CityVenue::Shelter,
+        "weekday commuters should switch to a real shelter when raining");
+    Check(ulw::PreferredVenue(routineSeed, 12, 3, 1, 0) == CityVenue::Food &&
+        !ulw::PreferredVenue(routineSeed, 8, 7, 1, 0) && !ulw::PreferredVenue(routineSeed, 26, 3, 1, 0),
+        "scheduled destinations should respect lunch, weekends and the valid clock");
+    Check(ulw::IsCityVenue(4) && !ulw::IsCityVenue(5) && !ulw::IsCityVenue(7),
+        "civilian visits should use world effects that do not activate scripted tasks");
+    bool pauses{}, calls{};
+    for (std::uint16_t seed = 0; seed < 256; ++seed) {
+        const auto reaction = ulw::ReactToStreetCrash(seed, 100);
+        pauses |= reaction == CrashReaction::Pause;
+        calls |= reaction == CrashReaction::Call;
+        Check(ulw::ReactToStreetCrash(seed, 4) == CrashReaction::Leave, "nearby wrecks should send witnesses back");
+    }
+    Check(pauses && calls, "some crash witnesses should wait or call when watching from a safe distance");
+
+    ulw::CityLife city;
+    constexpr ulw::Point pedestrian{0, 0, 1};
+    constexpr ulw::VenueObservation stop{{6, 0, 1}, {7, 0, 1}, 1200, 1, CityVenue::BusStop};
+    constexpr ulw::VenueObservation second{{9, 0, 1}, {10, 0, 1}, 1201, 1, CityVenue::BusStop};
+    constexpr ulw::VenueObservation above{{4, 0, 8}, {5, 0, 8}, 1202, 1, CityVenue::BusStop};
+    city.ObserveVenue(stop, 1000);
+    city.ObserveVenue(second, 1000);
+    city.ObserveVenue(above, 1000);
+    const auto close = city.FindVenue(CityVenue::BusStop, pedestrian, 1, 1000);
+    Check(close && close->model == stop.model && !city.FindVenue(CityVenue::Food, pedestrian, 1, 1000),
+        "the route must use a live venue of the right kind and elevation");
+    city.ReserveVenue(stop, 1050);
+    city.ObserveVenue(stop, 1100);
+    const auto available = city.FindVenue(CityVenue::BusStop, pedestrian, 1, 1150);
+    Check(available && available->model == second.model && !city.FindVenue(CityVenue::BusStop, pedestrian, 2, 1150),
+        "refreshing an observed venue should preserve its reservation and district");
+    Check(city.FindVenue(CityVenue::BusStop, pedestrian, 1, 11100).has_value() &&
+        !city.FindVenue(CityVenue::BusStop, pedestrian, 1, 31100), "reserved venues open later and unloaded venues expire");
+
+    constexpr std::uint32_t walker = 0x101;
+    Check(city.TakeVisitAttempt(walker, 1300, 20) && city.TakeVisitAttempt(0x301, 1300, 20) &&
+        !city.TakeVisitAttempt(0x401, 1300, 20) && city.TakeVisitAttempt(0x401, 1310, 21) &&
+        !city.TakeVisitAttempt(walker, 1310, 21), "no more than two visitors should scan in a frame");
+    city.Start(walker, {200, 300, 1450, ResidentAction::Visit, stop.point});
+    Check(city.Current(walker, 200, 300).has_value() && !city.Current(0x102, 200, 300) &&
+        !city.Current(walker, 200, 400), "native action holders must match the resident generation and both tasks");
+    city.Finish(0x102);
+    Check(city.Current(walker, 200, 300).has_value(), "other generations cannot finish a visit");
+    city.Finish(walker);
+    Check(!city.Current(walker, 200, 300), "completion must free the resident's native task");
+
+    constexpr ulw::CrashSite crash{{0, 2, 0}, 0x501, 1500};
+    constexpr ulw::CrashSite later{{1, 2, 0}, 0x501, 12700};
+    Check(city.CanCall(crash, 1600), "the first witness should be able to call for help");
+    city.StartCall(crash, 1600);
+    Check(!city.CanCall(crash, 16000) && !city.CanCall(later, 13599) && city.CanCall(later, 13600),
+        "reporting must deduplicate the same crash and pace calls for different ones");
+    city.Reset();
+    Check(!city.FindVenue(CityVenue::BusStop, pedestrian, 1, 1000) && city.CanCall(crash, 1600),
+        "mission or session changes must clear world activity memory");
 }
 
 void TestCrashScenes() {
@@ -792,6 +857,8 @@ int wmain(int argc, wchar_t** argv) {
         std::puts("Combat maneuvers: faction tempo, ammunition, withdrawal, ally timing and gang losses passed.");
         TestCityActivity();
         std::puts("City: rush hour, regional nightlife and weather schedules passed.");
+        TestCityLife();
+        std::puts("City life: destination schedules, venue reservations, resident tasks and crash witness calls passed.");
         if (argc == 2) {
             TestLoader(argv[1]);
             std::puts("ASI: load and InitializeASI passed. The non-game process was rejected.");

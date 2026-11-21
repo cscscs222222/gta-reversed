@@ -14,9 +14,9 @@ if not exist "%ULW_BUILD%\work" mkdir "%ULW_BUILD%\work"
 if not exist "%ULW_BUILD%\dist" mkdir "%ULW_BUILD%\dist"
 pushd "%ULW_BUILD%\work"
 if errorlevel 1 exit /b 1
-cl %ULW_FLAGS% /LD "%ULW_SOURCE%IntelligenceCore.cpp" "%ULW_SOURCE%StreetSystems.cpp" "%ULW_SOURCE%PoliceInteractions.cpp" "%ULW_SOURCE%MissionState.cpp" "%ULW_SOURCE%HoodlumGame.cpp" /Fe:UltimateLivingWorld.asi
+cl %ULW_FLAGS% /LD "%ULW_SOURCE%IntelligenceCore.cpp" "%ULW_SOURCE%StreetSystems.cpp" "%ULW_SOURCE%PoliceInteractions.cpp" "%ULW_SOURCE%CityLife.cpp" "%ULW_SOURCE%MissionState.cpp" "%ULW_SOURCE%HoodlumGame.cpp" /Fe:UltimateLivingWorld.asi
 if errorlevel 1 goto fail
-cl %ULW_FLAGS% "%ULW_SOURCE%IntelligenceCore.cpp" "%ULW_SOURCE%StreetSystems.cpp" "%ULW_SOURCE%PoliceInteractions.cpp" "%ULW_SOURCE%MissionState.cpp" "%ULW_SOURCE%IntelligenceCoreTests.cpp" /Fe:UlwTests.exe
+cl %ULW_FLAGS% "%ULW_SOURCE%IntelligenceCore.cpp" "%ULW_SOURCE%StreetSystems.cpp" "%ULW_SOURCE%PoliceInteractions.cpp" "%ULW_SOURCE%CityLife.cpp" "%ULW_SOURCE%MissionState.cpp" "%ULW_SOURCE%IntelligenceCoreTests.cpp" /Fe:UlwTests.exe
 if errorlevel 1 goto fail
 UlwTests.exe "%CD%\UltimateLivingWorld.asi"
 if errorlevel 1 goto fail

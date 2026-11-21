@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include "IntelligenceCore.h"
+#include "CityLife.h"
 #include "MissionState.h"
 #include "PoliceInteractions.h"
 #include "StreetSystems.h"
@@ -53,6 +54,9 @@ constexpr std::uintptr_t ScriptPool = 0xA8B430;
 constexpr std::size_t ScriptSlotSize = 0xE0;
 constexpr std::size_t ScriptCount = 96;
 constexpr std::uintptr_t StandardWanderVtable = 0x85A200;
+constexpr std::uintptr_t NativeWanderNext = 0x674140;
+constexpr std::uintptr_t NativeWanderFirst = 0x6740E0;
+constexpr std::uintptr_t WalkPointVtable = 0x86FD50;
 constexpr std::uint32_t Walking = 4;
 constexpr std::uint32_t Jogging = 5;
 constexpr std::uint32_t Running = 6;
@@ -103,6 +107,13 @@ using PopulationUpdate = void(__cdecl*)(bool);
 using RandomCars = void(__cdecl*)();
 using ProcessScripts = void(__cdecl*)();
 using AddAttractorPed = bool(__cdecl*)(int, const void*, ulw::Point, void*, int);
+using NearbyEntities = void(__cdecl*)(const ulw::Point&, float, bool, std::int16_t*, std::int16_t,
+    void**, bool, bool, bool, bool, bool);
+using ModelEffect = const void*(__thiscall*)(const void*, int);
+using AttractorManager = void*(__cdecl*)();
+using EmptyAttractorSlot = bool(__thiscall*)(void*, const void*, const void*);
+using UseAttractor = void*(__thiscall*)(void*, const void*, void*);
+using UsePhone = void*(__thiscall*)(void*, int);
 using WanderControl = void*(__thiscall*)(void*, void*);
 using FootpathBlocked = bool(__thiscall*)(void*, void*, const std::uint32_t*);
 using FindChatPartner = bool(__thiscall*)(void*, void*);
@@ -132,6 +143,7 @@ ulw::TrafficHorns s_TrafficHorns{};
 ulw::RoadblockAttempts s_Roadblocks{};
 ulw::CrashScenes s_Crashes{};
 ulw::CrashWitnesses s_CrashWitnesses{};
+ulw::CityLife s_CityLife{};
 ulw::CombatPressure s_CombatPressure{};
 ulw::CombatManeuvers s_CombatManeuvers{};
 ulw::GangLosses s_GangLosses{};
@@ -182,6 +194,10 @@ unsigned s_PoliceReports{};
 unsigned s_SuspicionWarnings{};
 unsigned s_InvestigationRoutes{};
 unsigned s_VoluntaryArrests{};
+unsigned s_CityVisits{};
+unsigned s_CrashWaits{};
+unsigned s_CrashDepartures{};
+unsigned s_CrashCalls{};
 unsigned s_AllocationFailures{};
 std::uint32_t s_LastLogTime{};
 std::uint32_t s_LastGameTime{};
@@ -200,6 +216,9 @@ bool s_PoliceWitnesses{};
 bool s_PoliceCruise{};
 bool s_PoliceHud{};
 bool s_CivilianShots{};
+bool s_CityTasks{};
+bool s_CityVenues{};
+bool s_CityPhones{};
 std::uint32_t s_StreetTime{};
 
 template<typename T>
@@ -255,6 +274,9 @@ void LogActivity(std::uint32_t now) noexcept {
     Log(message);
     std::snprintf(message, sizeof(message), "policeReports=%u drivingWarnings=%u investigationRoutes=%u voluntaryArrests=%u",
         s_PoliceReports, s_SuspicionWarnings, s_InvestigationRoutes, s_VoluntaryArrests);
+    Log(message);
+    std::snprintf(message, sizeof(message), "scheduledVisits=%u crashWaits=%u crashDepartures=%u crashCalls=%u",
+        s_CityVisits, s_CrashWaits, s_CrashDepartures, s_CrashCalls);
     Log(message);
     std::snprintf(message, sizeof(message), "coverHolds=%u coverPeeks=%u tacticalWithdrawals=%u allyWaits=%u gangCasualties=%u",
         s_CoverHolds, s_CoverPeeks, s_Withdrawals, s_AllyWaits, s_GangCasualties);
@@ -338,6 +360,7 @@ void ClearStreetMemory() noexcept {
     s_RoadPhysics.Reset();
     s_Crashes.Reset();
     s_CrashWitnesses.Reset();
+    s_CityLife.Reset();
     s_CombatPressure.Reset();
     s_CombatManeuvers.Reset();
     s_GangLosses.Reset();
@@ -476,6 +499,25 @@ void __cdecl OnRandomCars() noexcept {
     GameFunction<RandomCars>(0x4341C0)();
 }
 
+ulw::Point EffectPosition(const void* entity, const void* effect) noexcept {
+    const auto origin = EntityPosition(entity);
+    const auto local = Read<ulw::Point>(effect);
+    const auto* const matrix = Read<const void*>(entity, 0x14);
+    if (matrix) {
+        const auto right = Read<ulw::Point>(matrix);
+        const auto forward = Read<ulw::Point>(matrix, 0x10);
+        const auto up = Read<ulw::Point>(matrix, 0x20);
+        return {
+            origin.x + local.x * right.x + local.y * forward.x + local.z * up.x,
+            origin.y + local.x * right.y + local.y * forward.y + local.z * up.y,
+            origin.z + local.x * right.z + local.y * forward.z + local.z * up.z,
+        };
+    }
+    const auto forward = EntityForward(entity);
+    return {origin.x + local.x * forward.y + local.y * forward.x,
+        origin.y - local.x * forward.x + local.y * forward.y, origin.z + local.z};
+}
+
 bool __cdecl OnAttractorPed(int model, const void* attractor, ulw::Point position, void* entity, int decisionMaker) noexcept {
     const auto add = GameFunction<AddAttractorPed>(0x614210);
     const auto now = GameValue<std::uint32_t>(0xB7CB84);
@@ -484,6 +526,13 @@ bool __cdecl OnAttractorPed(int model, const void* attractor, ulw::Point positio
     }
     const auto hour = GameValue<std::uint8_t>(0xB70153);
     const auto type = Read<std::uint8_t>(attractor, 0x34);
+    const auto entityType = Read<std::uint8_t>(entity, 0x36) & 7;
+    if (s_CityVenues && ulw::IsCityVenue(type) && (entityType == 1 || entityType == 4) &&
+        Read<std::uint8_t>(entity, 0x2F) == 0 && Read<std::uint8_t>(attractor, 0x0C) == 3) {
+        s_CityLife.ObserveVenue({EntityPosition(entity), EffectPosition(entity, attractor),
+            Read<std::uint16_t>(entity, 0x22), GameValue<std::uint16_t>(0xC81314),
+            static_cast<ulw::CityVenue>(type)}, now);
+    }
     const auto chance = ulw::AttractorUsePercent(type, hour, GameValue<std::uint8_t>(0xB7014E),
         GameValue<std::uint16_t>(0xC81314), GameValue<float>(0xC81324));
     // The same spot keeps its availability for a game hour, including
@@ -519,30 +568,103 @@ ulw::PedestrianRoutine PedestrianRoutineFor(const void* ped) noexcept {
         GameValue<std::uint8_t>(0xB7014E), GameValue<std::uint16_t>(0xC81314), GameValue<float>(0xC81324));
 }
 
-void NoticeCrash(void* ped, std::uint32_t now) noexcept {
-    if (Read<std::uint8_t>(ped, 0x46C) & 0xBC || Read<std::uint32_t>(ped, 0x748) >= now ||
-        !GameValue<void*>(PedPool)) {
-        return;
+int StreetPedReference(const void* ped) noexcept;
+
+void* StartResidentTask(std::uint32_t ref, void* wander, void* child, std::uint32_t now,
+    ulw::ResidentAction action, ulw::Point focus) noexcept {
+    if (child) {
+        s_CityLife.Start(ref, {reinterpret_cast<std::uintptr_t>(wander), reinterpret_cast<std::uintptr_t>(child),
+            now, action, focus});
+    }
+    return child;
+}
+
+bool CityPathVisible(ulw::Point from, ulw::Point to) noexcept {
+    from.z += 0.55f;
+    to.z += 0.55f;
+    return GameFunction<LineClear>(0x56A490)(from, to, true, false, false, true, true, false, false);
+}
+
+void* TryScheduledVisit(void* wander, const void* ped, std::uint32_t ref, std::uint32_t now) noexcept {
+    const auto region = GameValue<std::uint16_t>(0xC81314);
+    const auto kind = ulw::PreferredVenue(Read<std::uint16_t>(ped, 0x20), GameValue<std::uint8_t>(0xB70153),
+        GameValue<std::uint8_t>(0xB7014E), region, GameValue<float>(0xC81324));
+    if (!kind || !s_CityLife.TakeVisitAttempt(ref, now, GameValue<std::uint32_t>(0xB7CB4C))) {
+        return nullptr;
     }
     const auto origin = EntityPosition(ped);
-    const auto incident = s_Crashes.Closest(origin, 12.0f, now);
+    const auto venue = s_CityLife.FindVenue(*kind, origin, region, now);
+    if (!venue || venue->model >= 20000 || !CityPathVisible(origin, venue->point)) {
+        return nullptr;
+    }
+    const auto* const model = GameValue<const void*>(0xA9B0C8 + venue->model * sizeof(void*));
+    if (!model) {
+        return nullptr;
+    }
+    const auto effects = Read<std::uint8_t>(model, 0x0D);
+    if (!effects) {
+        return nullptr;
+    }
+    std::int16_t count{};
+    std::array<void*, 20> entities{};
+    GameFunction<NearbyEntities>(0x564A20)(venue->owner, 1.75f, false, &count,
+        static_cast<std::int16_t>(entities.size()), entities.data(), true, false, false, true, false);
+    const auto found = std::clamp(static_cast<int>(count), 0, static_cast<int>(entities.size()));
+    for (int i = 0; i < found; ++i) {
+        auto* const entity = entities[static_cast<unsigned>(i)];
+        if (!entity || Read<std::uint16_t>(entity, 0x22) != venue->model ||
+            Read<std::uint8_t>(entity, 0x2F) != 0 || ulw::DistanceSquared(EntityPosition(entity), venue->owner) > 0.9f * 0.9f) {
+            continue;
+        }
+        for (int effect = 0; effect < effects; ++effect) {
+            const auto* const candidate = GameFunction<ModelEffect>(0x4C4C70)(model, effect);
+            if (!candidate || Read<std::uint8_t>(candidate, 0x0C) != 3 ||
+                Read<std::uint8_t>(candidate, 0x34) != static_cast<std::uint8_t>(*kind) ||
+                ulw::DistanceSquared(EffectPosition(entity, candidate), venue->point) > 1.1f * 1.1f) {
+                continue;
+            }
+            auto* const manager = GameFunction<AttractorManager>(0x5EE190)();
+            if (!manager || !GameFunction<EmptyAttractorSlot>(0x5EBB00)(manager, candidate, entity)) {
+                return nullptr;
+            }
+            auto* const memory = GameFunction<AllocateTask>(0x61A5A0)(0x24);
+            if (!memory) {
+                ++s_AllocationFailures;
+                return nullptr;
+            }
+            auto* const action = GameFunction<UseAttractor>(0x6321F0)(memory, candidate, entity);
+            s_CityLife.ReserveVenue(*venue, now);
+            ++s_CityVisits;
+            return StartResidentTask(ref, wander, action, now, ulw::ResidentAction::Visit, venue->point);
+        }
+    }
+    return nullptr;
+}
+
+void* NoticeCrash(void* wander, void* ped, std::uint32_t now, bool canAct) noexcept {
+    if (Read<std::uint8_t>(ped, 0x46C) & 0xBC || Read<std::uint32_t>(ped, 0x748) >= now ||
+        !GameValue<void*>(PedPool)) {
+        return nullptr;
+    }
+    const auto origin = EntityPosition(ped);
+    const auto incident = s_Crashes.Closest(origin, 16.0f, now);
     if (!incident) {
-        return;
+        return nullptr;
     }
     const auto reference = GameFunction<PedReference>(0x54FF60)(ped);
     if (reference < 0 || (reference & 0x80)) {
-        return;
+        return nullptr;
     }
     const auto id = static_cast<std::uint32_t>(reference);
     if (s_CrashWitnesses.Noticed(id, *incident) ||
         !s_CrashWitnesses.TakeScan(id, now, GameValue<std::uint32_t>(0xB7CB4C))) {
-        return;
+        return nullptr;
     }
     const ulw::Point eye{origin.x, origin.y, origin.z + 0.65f};
     auto target = incident->position;
     target.z += 0.7f;
     if (!GameFunction<LineClear>(0x56A490)(eye, target, true, false, false, true, true, false, false)) {
-        return;
+        return nullptr;
     }
     const auto yaw = std::atan2(origin.x - target.x, target.y - origin.y);
     GameFunction<PedLookHeading>(0x5DEDC0)(ped, yaw, false, false);
@@ -550,6 +672,67 @@ void NoticeCrash(void* ped, std::uint32_t now) noexcept {
     s_CrashWitnesses.Remember(id, *incident);
     ++s_CrashGlances;
     LogActivity(now);
+    if (!canAct) {
+        return nullptr;
+    }
+    const auto reaction = ulw::ReactToStreetCrash(Read<std::uint16_t>(ped, 0x20), ulw::DistanceSquared(origin, target));
+    switch (reaction) {
+    case ulw::CrashReaction::Leave:
+        if (auto* const memory = GameFunction<AllocateTask>(0x61A5A0)(0x44)) {
+            ++s_CrashDepartures;
+            return StartResidentTask(id, wander, GameFunction<FleePoint>(0x65BD20)(memory, incident->position,
+                false, 13.0f, 2100), now, ulw::ResidentAction::Leave, incident->position);
+        }
+        break;
+    case ulw::CrashReaction::Pause:
+        if (auto* const memory = GameFunction<AllocateTask>(0x61A5A0)(0x20)) {
+            ++s_CrashWaits;
+            return StartResidentTask(id, wander, GameFunction<StandStill>(0x62F310)(memory, 850, false, false, 8.0f),
+                now, ulw::ResidentAction::Pause, incident->position);
+        }
+        break;
+    case ulw::CrashReaction::Call:
+        if (s_CityPhones && s_PoliceCruise && s_CityLife.CanCall(*incident, now)) {
+            if (auto* const memory = GameFunction<AllocateTask>(0x61A5A0)(0x20)) {
+                s_CityLife.StartCall(*incident, now);
+                return StartResidentTask(id, wander, GameFunction<UsePhone>(0x6348A0)(memory, 2400),
+                    now, ulw::ResidentAction::Call, incident->position);
+            }
+            break;
+        }
+        return nullptr;
+    case ulw::CrashReaction::Glance:
+        return nullptr;
+    }
+    ++s_AllocationFailures;
+    return nullptr;
+}
+
+void* __fastcall OnWanderNext(void* wander, void*, void* ped) noexcept {
+    if (!AmbientWalker(wander, ped)) {
+        return GameFunction<WanderControl>(NativeWanderNext)(wander, ped);
+    }
+    const auto ref = StreetPedReference(ped);
+    if (ref >= 0) {
+        const auto id = static_cast<std::uint32_t>(ref);
+        const auto action = s_CityLife.Current(id, reinterpret_cast<std::uintptr_t>(wander), Read<std::uintptr_t>(wander, 0x08));
+        if (action) {
+            s_CityLife.Finish(id);
+            const auto now = GameValue<std::uint32_t>(0xB7CB84);
+            if (StreetActive(now) && action->action == ulw::ResidentAction::Call && now - action->started >= 1700) {
+                ++s_CrashCalls;
+                if (s_PoliceIncidents.Record(ulw::IncidentKind::Crash, id, action->focus, now, false)) {
+                    ++s_PoliceReports;
+                }
+            }
+            constexpr std::uint16_t InvalidArea = 0xFFFF;
+            auto* const memory = static_cast<std::byte*>(wander);
+            std::memcpy(memory + 0x18, &InvalidArea, sizeof(InvalidArea));
+            std::memcpy(memory + 0x1C, &InvalidArea, sizeof(InvalidArea));
+            return GameFunction<WanderControl>(NativeWanderFirst)(wander, ped);
+        }
+    }
+    return GameFunction<WanderControl>(NativeWanderNext)(wander, ped);
 }
 
 void* __fastcall OnWanderControl(void* task, void*, void* ped) noexcept {
@@ -560,7 +743,12 @@ void* __fastcall OnWanderControl(void* task, void*, void* ped) noexcept {
     }
     auto* const paceField = static_cast<std::byte*>(task) + 0x0C;
     const auto previous = Read<std::uint32_t>(paceField);
-    const auto* const runningTask = Read<const void*>(task, 0x08);
+    auto* const runningTask = Read<void*>(task, 0x08);
+    const auto ref = s_CityTasks ? StreetPedReference(ped) : -1;
+    if (ref >= 0 && s_CityLife.Current(static_cast<std::uint32_t>(ref), reinterpret_cast<std::uintptr_t>(task),
+        reinterpret_cast<std::uintptr_t>(runningTask))) {
+        return runningTask;
+    }
     const auto routine = PedestrianRoutineFor(ped);
     const bool jog = previous == Walking && routine.pace == ulw::PedestrianPace::Jog;
     if (jog) {
@@ -570,8 +758,20 @@ void* __fastcall OnWanderControl(void* task, void*, void* ped) noexcept {
     if (jog) {
         std::memcpy(paceField, &previous, sizeof(previous));
     }
+    const bool canAct = ref >= 0 && next && next == runningTask &&
+        Read<std::uintptr_t>(runningTask) == WalkPointVtable && GameValue<void*>(TaskPool);
+    if (canAct) {
+        s_CityLife.Finish(static_cast<std::uint32_t>(ref));
+    }
     if (s_CrashGlancesEnabled && next && next == runningTask) {
-        NoticeCrash(ped, now);
+        if (auto* const crash = NoticeCrash(task, ped, now, canAct)) {
+            return crash;
+        }
+    }
+    if (s_CityVenues && canAct) {
+        if (auto* const visit = TryScheduledVisit(task, ped, static_cast<std::uint32_t>(ref), now)) {
+            return visit;
+        }
     }
     return next;
 }
@@ -2116,6 +2316,13 @@ void InstallCity() noexcept {
         PatchCalls({0x53C1C1}, 0x4341C0, reinterpret_cast<std::uintptr_t>(&OnRandomCars));
     const bool attractors = Matches(0x614210, Entry{0x64, 0xA1, 0, 0, 0, 0, 0xD9, 0x05}) &&
         PatchCalls({0x615C0D}, 0x614210, reinterpret_cast<std::uintptr_t>(&OnAttractorPed));
+    s_CityVenues = attractors &&
+        Matches(0x564A20, Entry{0x83, 0xEC, 0x18, 0x53, 0x55, 0x56, 0x57, 0x8B}) &&
+        Matches(0x4C4C70, Entry{0x53, 0x55, 0x8B, 0xD9, 0x8B, 0x03, 0x0F, 0xB6}) &&
+        Matches(0x4AF46B, Entry{0x8B, 0x3C, 0x95, 0xC8, 0xB0, 0xA9, 0, 0x8A}) &&
+        Matches(0x5EE190, Entry{0x6A, 0xFF, 0x68, 0x8B, 0xDC, 0x83, 0, 0x64}) &&
+        Matches(0x5EBB00, Entry{0x8B, 0x44, 0x24, 0x04, 0x85, 0xC0, 0x74, 0x06}) &&
+        Matches(0x6321F0, Entry{0x6A, 0xFF, 0x68, 0x38, 0x06, 0x84, 0, 0x64});
     Log(pedestrians ? "Installed: ambient pedestrian schedules." : "Skipped: population function differs.");
     Log(cars ? "Installed: ambient car schedules." : "Skipped: car generation function differs.");
     Log(attractors ? "Installed: neighborhood activity schedules." : "Skipped: pedestrian attractor function differs.");
@@ -2126,6 +2333,20 @@ bool InstallStreetPedestrians() noexcept {
         PatchTaskMethod(StandardWanderVtable + 10 * sizeof(void*), 0x674C30,
             reinterpret_cast<std::uintptr_t>(&OnWanderControl));
     Log(routines ? "Installed: civilian walking routines." : "Skipped: civilian wander task differs.");
+    s_CityTasks = routines && PedQueriesMatch() &&
+        Matches(0x61A5A0, Entry{0x8B, 0x0D, 0xA8, 0x44, 0xB7, 0x00, 0xE9, 0x55}) &&
+        Matches(0x65BD20, Entry{0x56, 0x8B, 0xF1, 0xE8, 0x88, 0xE6, 0xFB, 0xFF}) &&
+        Matches(0x62F310, Entry{0x56, 0x8B, 0xF1, 0xE8, 0x78, 0xB0, 0xFE, 0xFF}) &&
+        Matches(NativeWanderFirst, Entry{0x56, 0x57, 0x8B, 0x7C, 0x24, 0x0C, 0x8B, 0x87}) &&
+        Matches(0x674C80, Entry{0x66, 0x89, 0x46, 0x1C, 0x66, 0x89, 0x46, 0x18}) &&
+        Matches(NativeWanderNext, Entry{0x6A, 0xFF, 0x64, 0xA1, 0, 0, 0, 0}) &&
+        PatchTaskMethod(StandardWanderVtable + 8 * sizeof(void*), NativeWanderNext,
+            reinterpret_cast<std::uintptr_t>(&OnWanderNext));
+    s_CityVenues = s_CityTasks && s_CityVenues;
+    s_CityPhones = s_CityTasks &&
+        Matches(0x6348A0, Entry{0x56, 0x8B, 0xF1, 0xE8, 0x08, 0x5B, 0xFE, 0xFF});
+    Log(s_CityVenues ? "Installed: scheduled civilian visits to native venues." : "Skipped: civilian venue task differs.");
+    Log(s_CityPhones ? "Installed: native civilian phone calls." : "Skipped: civilian phone task differs.");
     const bool social = Matches(0x672600, Entry{0x56, 0x8B, 0xF1, 0x8A, 0x46, 0x30, 0x84, 0xC0}) &&
         Matches(0x66FDA0, Entry{0x6A, 0xFF, 0x68, 0x90, 0x55, 0x84, 0x00, 0x64}) &&
         PatchCalls({0x672672}, 0x66FDA0, reinterpret_cast<std::uintptr_t>(&OnChatPartner));
@@ -2159,7 +2380,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.14.0");
+    Log("Ultimate Living World 0.15.0");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");

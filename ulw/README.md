@@ -1,10 +1,10 @@
-# Ultimate Living World 0.14.0
+# Ultimate Living World 0.15.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
 | Sistem | Bu paketteki değişiklik |
 | --- | --- |
-| Siviller | Silah sesi, yangın ve yakındaki kazalar farklı tepkiler doğurur. Ağır kazanın görüş hattında kalan yaya enkaza bakabilir. Oyun, kazaya doğru giden kısa bir yaya rotasında alternatif yol arar. |
+| Siviller | Silah sesi, yangın ve kazalar farklı tepkiler doğurur. Ağır bir kaza karşısında bazı yayalar bakar, bazıları kısa süre bekler veya uzaklaşır. Kaza güvenli bir mesafeden görülürse uygun bir tanık oyunun telefon animasyonuyla polis için ihbar bırakabilir. |
 | Polis | Yaya ve araç ekipleri son görüş konumunu paylaşabilir. Silah sesi ve tanıklar bir olay yeri ihbarı oluşturabilir. Aranma seviyesi yokken devriyeler doğrudan gördükleri tehlikeli sürüşe uyarı verebilir ve kısa süre gözlemleyebilir. Düşük aranma seviyesinde oyuncu teslim olabilir. Üç yıldızdan itibaren ikinci ekip, görülen hareket yönüne göre yol kesme rotası seçebilir. |
 | Hava desteği | Serbest dolaşımda polis helikopteri görüş bilgisini devriyelerle paylaşır. Görüş kesilince son bildirilen bölgeyi tarar. Gece projektörü tarama konumuna yönelir. |
 | Barikatlar | Oyunun dinamik barikat adayları yol genişliği, araç hızı, takip bilgisi ve kamera görüşüne göre elenir. Oyun yol geometrisini ve barikat araçlarını kendi yönetir. |
@@ -12,7 +12,7 @@ Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 | Acil servis | Ambulans ve itfaiye ekipleri, oyun tarafından belirlenen olay yerine yaklaşırken hızlarını daha erken düşürür. Islak zeminde ve siste fren daha erken başlar. Oyunun rota ve ekip görevleri kullanılır. |
 | Araç fiziği | Oyuncunun serbest dolaşımda kullandığı otomobil ve motosikletlerin tutuşu, frenleri ve çekişi yol ve hasar durumuna göre değişir. Düşük hızda uzun süre tam gaz kalan hasarlı motor daha çabuk ısınır ve geçici güç kaybeder. Otomobilin hasarlı çamurluğu veya tamponu yakınındaki tekerlekleri etkiler. |
 | Çatışma | Art arda vurulan silahlı polis ve çete üyeleri kısa serilere geçer, uygun siper arar ve güvenli bir noktaya ulaşınca kısa süre bekler. Cephane azalırsa veya silah şarjör değiştiriyorsa bekleme uzayabilir. Bir yanda ateş hattı açılırsa NPC o tarafa ilerleyebilir. Ağır yaralanan veya cephanesi tükenen NPC uygun bir yoldan kısa süre geri çekilebilir. |
-| Şehir | Trafik ve sivil yaya yoğunluğu saat, gün, bölge ve hava durumuna göre değişir. Mevcut durakların, bankların, yiyecek noktalarının ve yağmur barınaklarının kullanımı bu koşullara uyarlanır. Bazı yayalar hafta içi yoğun saatlerde veya yağmurda daha hızlı ilerler. Sokakta konuşma eğilimi de saate, şehre ve yağmura göre değişir. |
+| Şehir | Trafik ve yaya yoğunluğu saate, güne, bölgeye ve havaya göre değişir. Uygun yayalar sabah duraklara, öğle saatinde yiyecek noktalarına, akşam bank veya merdivenlere, yağmurda sığınaklara yürüyebilir. Oyunun mevcut etkileşim noktaları ve sıra sistemi kullanılır. |
 | Görevler | ULW görev işaretlerini ve motorun çalışan görev betiğini izler. Görevlerde, ara sahnelerde ve görev sonu toparlanma sırasında yeni dünya davranışlarını askıya alır. |
 
 ## Test kopyasına kurulum
@@ -41,6 +41,8 @@ Görevi başlattığında `scripts\UltimateLivingWorld.log` içinde `Mission pro
 Windows derlemesi sivil tepkileri, yaya temposunu, kaza tanığı belleğini, kazadan sonra duran araçların yaya rotalarına etkisini, kara ve hava devriyelerini, barikatları, araç davranışını ve görev geçişlerini otomatik olarak test eder. Windows test süreci ASI’yi yükler ve bağlantıların oyun dışı bir süreçte devre dışı kaldığını kontrol eder.
 
 Yeni yaya davranışını görmek için serbest dolaşımda yakındaki bir sivil otomobil ağır çarpışmadan sonra kaldırıma yakın durduğunda yayaları gözle. Ayrı bir denemede açık hava ile yağmurda sokaktaki yürüme hızını ve konuşma sıklığını karşılaştır. Günlükteki `crashGlances` ve `crashReroutes` sayaçları bu kararların çalışıp çalışmadığını gösterir. Oyun içi testler bekliyor.
+
+Şehir rutinlerini denemek için hafta içi sabah bir durağın yakınında yayaları izle. Öğle saatinde yiyecek tezgâhlarında, yağmurda kapalı bekleme noktalarında aynı karşılaştırmayı yap. `scheduledVisits` başlatılan ziyaretleri kaydeder. Ağır bir kazadan sonra `crashWaits`, `crashDepartures` ve `crashCalls` sayaçları duraklama, uzaklaşma ve tamamlanan telefon çağrılarını gösterir. Telefon ihbarı devriye incelemesine eklenir.
 
 Araçları denemek için serbest dolaşımda aynı motosikletle kuru ve ıslak yolda fren yap. Hasarlı bir otomobilde düşük hızda uzun süre gaz verdikten sonra hızlanmayı dene. Ardından gazı azaltıp motorun soğumasını bekle. Windows testleri ısınma, soğuma, tamir sonrası sıfırlama ve bölgesel hasar hesaplarını kapsar.
 
