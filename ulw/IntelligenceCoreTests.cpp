@@ -126,22 +126,67 @@ void TestCrashScenes() {
     Check(!scenes.Ahead({}, north, 1100), "a minor bump must not start a crash scene");
     scenes.Observe({0x301, 1000, 900, scene, 0.08f, 45.0f});
     Check(!scenes.Ahead({}, north, 1100), "a moving car must not mark the road obstructed");
-    scenes.Observe({0x301, 1000, 900, scene, 0.0f, 45.0f});
-    Check(scenes.Ahead({}, north, 1100), "a stopped crash should affect approaching traffic");
+    scenes.Observe({0x301, 1900, 900, scene, 0.0f, 0.0f});
+    Check(scenes.Ahead({}, north, 2000), "recent impact should still be known when the car stops later");
     Check(!scenes.Ahead({0, 0, 6}, north, 1100) && !scenes.Ahead({}, {0, -1, 0}, 1100),
         "traffic travelling away or on another elevation must ignore the incident");
+    const auto witness = scenes.Closest({0, 7, 0}, 12, 2000);
+    Check(witness && witness->vehicle == 0x301 && witness->impactAt == 900 &&
+        !scenes.Closest({0, 7, 6}, 12, 2000), "only a nearby crash at the same level should attract attention");
+    Check(scenes.ObstructsFootpath({0, 10, 0}, {0, 17, 0}, 2000) &&
+        !scenes.ObstructsFootpath({0, 10, 0}, {0, 5, 0}, 2000) &&
+        !scenes.ObstructsFootpath({0, 10, 6}, {0, 17, 6}, 2000) &&
+        !scenes.ObstructsFootpath({5, 10, 0}, {5, 17, 0}, 2000),
+        "only footpaths towards the same-level obstacle should be marked blocked");
     Check(!scenes.Ahead({}, north, 8900), "crash scene should expire");
     scenes.Observe({0x302, 1350, 0, {50, 50, 0}, 0.0f, 0.0f});
     Check(!scenes.Ahead({}, north, 1350), "a recycled vehicle slot should clear the scene");
     scenes.Observe({0x302, 1600, 1510, scene, 0.0f, 45.0f});
     scenes.Observe({0x302, 2010, 1510, scene, 0.05f, 0.0f});
     Check(!scenes.Ahead({}, north, 2020), "a crash scene should clear once the car drives away");
+    scenes.Observe({0x302, 2020, 1510, scene, 0.0f, 0.0f});
+    Check(!scenes.Ahead({}, north, 2030), "stopping again must not revive an old impact");
     ulw::TrafficInput input{50, 40, 0, 0, 12, 12, false, false};
     const auto normal = ulw::TrafficLimit(input);
     input.crashAhead = true;
     Check(ulw::TrafficLimit(input) < normal, "the incident must lower the speed cap");
     input.nativeLimit = 0;
     Check(ulw::TrafficLimit(input) == 0, "crash scene must preserve the red-light stop");
+}
+
+void TestPedestrianRoutines() {
+    using ulw::PedestrianPace;
+    bool rainyRush{};
+    bool weekdayRush{};
+    bool nightlife{};
+    bool sports{};
+    for (std::uint16_t seed = 0; seed < 512; ++seed) {
+        const auto dry = ulw::PickPedestrianRoutine(seed, 13, 3, 1, 0);
+        const auto rain = ulw::PickPedestrianRoutine(seed, 13, 3, 1, 1);
+        rainyRush |= dry.pace == PedestrianPace::Walk && rain.pace == PedestrianPace::Jog && !rain.chat;
+        weekdayRush |= ulw::PickPedestrianRoutine(seed, 17, 3, 1, 0).pace == PedestrianPace::Jog &&
+            ulw::PickPedestrianRoutine(seed, 17, 7, 1, 0).pace == PedestrianPace::Walk;
+        nightlife |= !ulw::PickPedestrianRoutine(seed, 23, 5, 1, 0).chat && ulw::PickPedestrianRoutine(seed, 23, 5, 3, 0).chat;
+        sports |= ulw::PickPedestrianRoutine(seed, 7, 7, 1, 0).pace == PedestrianPace::Jog &&
+            ulw::PickPedestrianRoutine(seed, 10, 7, 1, 0).pace == PedestrianPace::Walk;
+    }
+    Check(rainyRush && weekdayRush && nightlife && sports, "civilian routines should vary with rain, day and place");
+    const auto invalidClock = ulw::PickPedestrianRoutine(10, 24, 0, 1, 1);
+    Check(invalidClock.pace == PedestrianPace::Walk && invalidClock.chat, "an unset clock should keep native walking and social behavior");
+
+    ulw::CrashWitnesses witnesses;
+    constexpr ulw::CrashSite collision{{0, 2, 0}, 0x301, 700};
+    Check(witnesses.TakeScan(0x101, 1000, 20) && !witnesses.Noticed(0x101, collision), "a new witness should inspect the scene");
+    witnesses.Remember(0x101, collision);
+    Check(witnesses.Noticed(0x101, collision) && !witnesses.TakeScan(0x101, 1100, 21),
+        "a witness should remember the same incident and respect the scan interval");
+    Check(witnesses.TakeScan(0x102, 1120, 22) && !witnesses.Noticed(0x102, collision),
+        "reused pedestrian slots must not inherit old witness memory");
+    for (std::uint32_t slot = 2; slot < 6; ++slot) {
+        Check(witnesses.TakeScan(slot << 8, 1120, 22), "a nearby pedestrian should have a witness budget slot");
+    }
+    Check(!witnesses.TakeScan(0x601, 1120, 22) && witnesses.TakeScan(0x601, 1135, 23),
+        "witness checks need a per-frame limit");
 }
 
 void TestAirSupportAndRoadblocks() {
@@ -340,7 +385,9 @@ int wmain(int argc, wchar_t** argv) {
         std::puts("Core: frame budget, perception, memory, slot reuse and reactions passed.");
         TestPoliceSearch();
         TestCrashScenes();
+        TestPedestrianRoutines();
         TestTrafficAndPhysics();
+        std::puts("Pedestrians: routine timing, witness memory, and crash-aware footpaths passed.");
         std::puts("Street systems: police search and reports, traffic limits, wet grip and brake fade passed.");
         TestAirSupportAndRoadblocks();
         std::puts("Police support: air and ground reports, search routes and roadblock placement passed.");

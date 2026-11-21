@@ -2,6 +2,8 @@
 
 #include "IntelligenceCore.h"
 
+#include <optional>
+
 namespace ulw {
 
 float DistanceSquared(Point a, Point b) noexcept;
@@ -100,20 +102,59 @@ struct CrashObservation {
     float impact;
 };
 
+struct CrashSite {
+    Point position;
+    std::uint32_t vehicle;
+    std::uint32_t impactAt;
+};
+
 class CrashScenes {
 public:
     void Observe(const CrashObservation& observation) noexcept;
     bool Ahead(Point position, Point forward, std::uint32_t now) const noexcept;
+    std::optional<CrashSite> Closest(Point position, float radius, std::uint32_t now) const noexcept;
+    bool ObstructsFootpath(Point from, Point nextNode, std::uint32_t now) const noexcept;
     void Reset() noexcept;
 
 private:
+    enum class Status : std::uint8_t { Empty, Observed, Stopped, Cleared };
     struct Scene {
         std::uint32_t vehicle{};
         std::uint32_t impactAt{};
         Point position{};
-        bool occupied{};
+        Status status{};
     };
     std::array<Scene, 16> m_Scenes{};
+};
+
+enum class PedestrianPace : std::uint8_t { Walk, Jog };
+
+struct PedestrianRoutine {
+    PedestrianPace pace;
+    bool chat;
+};
+
+PedestrianRoutine PickPedestrianRoutine(std::uint16_t seed, unsigned hour, unsigned weekday, unsigned region,
+    float rain) noexcept;
+
+class CrashWitnesses {
+public:
+    bool TakeScan(std::uint32_t ped, std::uint32_t now, std::uint32_t frame) noexcept;
+    bool Noticed(std::uint32_t ped, const CrashSite& crash) const noexcept;
+    void Remember(std::uint32_t ped, const CrashSite& crash) noexcept;
+    void Reset() noexcept;
+
+private:
+    struct Witness {
+        std::uint32_t ped{};
+        std::uint32_t scannedAt{};
+        std::uint32_t vehicle{};
+        std::uint32_t impactAt{};
+        bool used{};
+    };
+    std::array<Witness, 128> m_Witnesses{};
+    std::uint32_t m_Frame{};
+    unsigned m_Scans{};
 };
 
 struct CityActivity {

@@ -6,6 +6,8 @@
 namespace ulw {
 namespace {
 
+constexpr std::uint32_t CrashLifetime = 8000;
+
 float Unit(float value) noexcept {
     return std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : 0.0f;
 }
@@ -201,20 +203,32 @@ float TrafficLimit(const TrafficInput& input) noexcept {
 
 void CrashScenes::Observe(const CrashObservation& crash) noexcept {
     auto& scene = m_Scenes[(crash.vehicle >> 8) % m_Scenes.size()];
-    const bool sameVehicle = scene.occupied && (scene.vehicle >> 8) == (crash.vehicle >> 8);
-    if (sameVehicle && (scene.vehicle != crash.vehicle || crash.speedSquared > 0.12f * 0.12f ||
-        DistanceSquared(scene.position, crash.position) > 16.0f)) {
+    const bool sameVehicle = scene.status != Status::Empty && (scene.vehicle >> 8) == (crash.vehicle >> 8);
+    if (sameVehicle && scene.vehicle != crash.vehicle) {
         scene = {};
     }
     if (crash.impactAt && crash.now - crash.impactAt < 900 && crash.impact >= 28.0f &&
+        (scene.status == Status::Empty || scene.vehicle != crash.vehicle || scene.impactAt != crash.impactAt)) {
+        scene = {crash.vehicle, crash.impactAt, crash.position, Status::Observed};
+    }
+    if (scene.vehicle != crash.vehicle) {
+        return;
+    }
+    if (scene.status == Status::Stopped &&
+        (crash.speedSquared > 0.12f * 0.12f || DistanceSquared(scene.position, crash.position) > 16.0f)) {
+        scene.status = Status::Cleared;
+        return;
+    }
+    if (scene.status == Status::Observed && crash.now - scene.impactAt < 2200 &&
         crash.speedSquared >= 0.0f && crash.speedSquared <= 0.08f * 0.08f) {
-        scene = {crash.vehicle, crash.impactAt, crash.position, true};
+        scene.position = crash.position;
+        scene.status = Status::Stopped;
     }
 }
 
 bool CrashScenes::Ahead(Point position, Point forward, std::uint32_t now) const noexcept {
     for (const auto& scene : m_Scenes) {
-        if (!scene.occupied || now - scene.impactAt >= 8000 || std::abs(scene.position.z - position.z) > 2.8f) {
+        if (scene.status != Status::Stopped || now - scene.impactAt >= CrashLifetime || std::abs(scene.position.z - position.z) > 2.8f) {
             continue;
         }
         const auto dx = scene.position.x - position.x;
@@ -228,8 +242,106 @@ bool CrashScenes::Ahead(Point position, Point forward, std::uint32_t now) const 
     return false;
 }
 
+std::optional<CrashSite> CrashScenes::Closest(Point position, float radius, std::uint32_t now) const noexcept {
+    std::optional<CrashSite> best;
+    auto limit = radius * radius;
+    for (const auto& scene : m_Scenes) {
+        if (scene.status != Status::Stopped || now - scene.impactAt >= CrashLifetime || std::abs(scene.position.z - position.z) > 2.5f) {
+            continue;
+        }
+        const auto distance = DistanceSquared(scene.position, position);
+        if (distance <= limit) {
+            limit = distance;
+            best = CrashSite{scene.position, scene.vehicle, scene.impactAt};
+        }
+    }
+    return best;
+}
+
+bool CrashScenes::ObstructsFootpath(Point from, Point nextNode, std::uint32_t now) const noexcept {
+    const auto dx = nextNode.x - from.x;
+    const auto dy = nextNode.y - from.y;
+    const auto lengthSquared = dx * dx + dy * dy;
+    if (!(lengthSquared >= 0.25f && lengthSquared <= 9.0f * 9.0f) ||
+        std::abs(nextNode.z - from.z) > 3.5f) {
+        return false;
+    }
+    for (const auto& scene : m_Scenes) {
+        if (scene.status != Status::Stopped || now - scene.impactAt >= CrashLifetime || std::abs(scene.position.z - from.z) > 2.5f) {
+            continue;
+        }
+        const auto x = scene.position.x - from.x;
+        const auto y = scene.position.y - from.y;
+        const auto along = (x * dx + y * dy) / lengthSquared;
+        if (!(along > 0.05f && along <= 1.15f)) {
+            continue;
+        }
+        const auto lateralX = x - dx * along;
+        const auto lateralY = y - dy * along;
+        if (lateralX * lateralX + lateralY * lateralY < 2.5f * 2.5f) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void CrashScenes::Reset() noexcept {
     m_Scenes = {};
+}
+
+PedestrianRoutine PickPedestrianRoutine(std::uint16_t seed, unsigned hour, unsigned weekday, unsigned region,
+    float rain) noexcept {
+    if (hour >= 24 || weekday < 1 || weekday > 7 || region > 4) {
+        return {PedestrianPace::Walk, true};
+    }
+    const auto personality = ((static_cast<std::uint32_t>(seed) * 0x45d9f3bu) >> 16) % 100;
+    const bool weekdayRush = weekday < 6 && ((hour >= 7 && hour < 10) || (hour >= 16 && hour < 19));
+    const bool outdoorRun = hour >= 6 && hour < 9 &&
+        (region == 1 || region == 2) && personality >= 80 && personality < 88 && Unit(rain) < 0.15f;
+    const bool hurried = (weekdayRush && personality < 20) || (Unit(rain) >= 0.25f && personality < 34) || outdoorRun;
+    const bool casualAtNight = region == 3 && (hour >= 20 || hour < 3);
+    return {hurried ? PedestrianPace::Jog : PedestrianPace::Walk,
+        !hurried && (Unit(rain) < 0.25f || personality >= 65) && (casualAtNight || !IsNight(hour) || personality >= 50)};
+}
+
+bool CrashWitnesses::TakeScan(std::uint32_t ped, std::uint32_t now, std::uint32_t frame) noexcept {
+    if (m_Frame != frame) {
+        m_Frame = frame;
+        m_Scans = 0;
+    }
+    if (m_Scans >= 5) {
+        return false;
+    }
+    auto& witness = m_Witnesses[(ped >> 8) % m_Witnesses.size()];
+    if (witness.used && witness.ped == ped && now - witness.scannedAt < 460) {
+        return false;
+    }
+    if (!witness.used || witness.ped != ped) {
+        witness = {ped, now, 0, 0, true};
+    } else {
+        witness.scannedAt = now;
+    }
+    ++m_Scans;
+    return true;
+}
+
+bool CrashWitnesses::Noticed(std::uint32_t ped, const CrashSite& crash) const noexcept {
+    const auto& witness = m_Witnesses[(ped >> 8) % m_Witnesses.size()];
+    return witness.used && witness.ped == ped && witness.vehicle == crash.vehicle && witness.impactAt == crash.impactAt;
+}
+
+void CrashWitnesses::Remember(std::uint32_t ped, const CrashSite& crash) noexcept {
+    auto& witness = m_Witnesses[(ped >> 8) % m_Witnesses.size()];
+    if (witness.used && witness.ped == ped) {
+        witness.vehicle = crash.vehicle;
+        witness.impactAt = crash.impactAt;
+    }
+}
+
+void CrashWitnesses::Reset() noexcept {
+    m_Witnesses = {};
+    m_Frame = 0;
+    m_Scans = 0;
 }
 
 CityActivity AmbientActivity(unsigned hour, unsigned weekday, unsigned region, float wet, float fog) noexcept {

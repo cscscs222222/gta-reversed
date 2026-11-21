@@ -1,17 +1,17 @@
-# Ultimate Living World 0.6.0
+# Ultimate Living World 0.7.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
 | Sistem | Bu paketteki değişiklik |
 | --- | --- |
-| Siviller | Silah sesine ve yakındaki yangına mesafe, görüş ve yakın geçmişe göre tepki verir. |
+| Siviller | Silah sesi, yangın ve yakındaki kazalar farklı tepkiler doğurur. Ağır kazanın görüş hattında kalan yaya enkaza bakabilir. Oyun, kazaya doğru giden kısa bir yaya rotasında alternatif yol arar. |
 | Polis | Yaya devriyeler ve polis otomobilleri son görüş konumunu paylaşabilir. Kapsanan araç takibinde polis, görüş kaybından sonra kaydedilen noktaya doğru yol seçer ve yaklaştığında daha geniş bir alanı tarar. |
 | Hava desteği | Serbest dolaşımda polis helikopteri görüş bilgisini devriyelerle paylaşır. Görüş kesilince son bildirilen bölgeyi tarar. Gece projektörü tarama konumuna yönelir. |
 | Barikatlar | Oyunun dinamik barikat adayları yol genişliği, araç hızı, takip bilgisi ve kamera görüşüne göre elenir. Oyun yol geometrisini ve barikat araçlarını kendi yönetir. |
 | Trafik | Sivil sürücüler yağmur, sis, gece, çarpışma veya arkadan yaklaşan siren nedeniyle yavaşlayabilir. Ağır çarpışmadan sonra duran araçlar aynı seviyede arkadan yaklaşan trafiği de yavaşlatabilir. Mevcut kırmızı ışık ve trafik sınırları uygulanmaya devam eder. |
 | Otomobiller | Islak yol ve ağır hasar yol tutuşunu azaltır. Uzun süreli sert frenleme fren etkisini, ağır hasar da aracın çekişini düşürebilir. |
 | Çatışma | Uygun serbest dolaşım karşılaşmalarında oyuncuya ateş eden polis ve çete üyelerinin isabeti mesafe, aydınlık, hava ve can durumuna göre değişir. Açık havada yakın çatışmalar zorlaşır. |
-| Şehir | Trafik ve sivil yaya yoğunluğu saat, gün, bölge ve hava durumuna göre değişir. Mevcut durakların, bankların, yiyecek noktalarının ve yağmur barınaklarının kullanım sıklığı bu koşullara uyarlanır. |
+| Şehir | Trafik ve sivil yaya yoğunluğu saat, gün, bölge ve hava durumuna göre değişir. Mevcut durakların, bankların, yiyecek noktalarının ve yağmur barınaklarının kullanımı bu koşullara uyarlanır. Bazı yayalar hafta içi yoğun saatlerde veya yağmurda daha hızlı ilerler. Sokakta konuşma eğilimi de saate, şehre ve yağmura göre değişir. |
 | Görevler | ULW görev işaretlerini ve motorun çalışan görev betiğini izler. Görevlerde, ara sahnelerde ve görev sonu toparlanma sırasında yeni dünya davranışlarını askıya alır. |
 
 ## Test kopyasına kurulum
@@ -37,9 +37,9 @@ Görevi başlattığında `scripts\UltimateLivingWorld.log` içinde `Mission pro
 
 ## Kontroller
 
-Windows derlemesi sivil tepkileri, hava ve kara devriyeleri arasındaki konum paylaşımını, arama rotalarını, barikat adaylarını, trafik kazası algılamayı, fren ve tutuşu, isabet profillerini, kentteki kullanım saatlerini ve serbest dolaşımla görevler arasındaki geçişleri otomatik olarak test eder. Windows test süreci ASI’yi yükler ve bağlantıların oyun dışı bir süreçte devre dışı kaldığını kontrol eder.
+Windows derlemesi sivil tepkileri, yaya temposunu, kaza tanığı belleğini, kazadan sonra duran araçların yaya rotalarına etkisini, kara ve hava devriyelerini, barikatları, araç davranışını ve görev geçişlerini otomatik olarak test eder. Windows test süreci ASI’yi yükler ve bağlantıların oyun dışı bir süreçte devre dışı kaldığını kontrol eder.
 
-Oyun içi doğrulama için gece serbest dolaşımda helikopter takibini başlat ve kapalı bir alana girerek görüş hattını kes. Araçla kovalamacada açık görüş alanında barikatların yerleşimini ve köşeyi döndükten sonra polislerin yönünü karşılaştır. Arama ve dinamik barikat kuralları serbest dolaşımda çalışır. Görevlerin, kayıt yüklemenin ve diğer eklentilerle birlikte çalışmanın oyun içi testleri bekliyor.
+Yeni yaya davranışını görmek için serbest dolaşımda yakındaki bir sivil otomobil ağır çarpışmadan sonra kaldırıma yakın durduğunda yayaları gözle. Ayrı bir denemede açık hava ile yağmurda sokaktaki yürüme hızını ve konuşma sıklığını karşılaştır. Günlükteki `crashGlances` ve `crashReroutes` sayaçları bu kararların çalışıp çalışmadığını gösterir. Oyun içi testler bekliyor.
 
 Günlük oyun zamanı ilerledikçe NPC kaçışı, devriye rotaları, hava araması, barikat yerleşim denemeleri, kazaya bağlı yavaşlama ve etkinlik noktalarının kullanımını sayar. `AirSupport` ve `Roadblocks` ayarları yeni sistemleri ayrı ayrı kapatır. Farklı bir ASI aynı oyun çağrısını önceden değiştirmişse Ultimate Living World ilgili bağlantıyı atlar ve durumu kaydeder. ASI değişikliklerini oyun kapalıyken yap.
 
@@ -47,4 +47,4 @@ Günlük oyun zamanı ilerledikçe NPC kaçışı, devriye rotaları, hava arama
 
 `build.cmd` var olan MSVC x86 ortamını kullanır ve paketi `bin/ulw/dist` altında üretir. GitHub Actions’taki **Build** iş akışı aynı adımları çalıştırır. Başarılı çalışmanın **Artifacts** bölümünde **UltimateLivingWorld** paketi çıkar. Arşivde ASI, INI, doğrulama betiği ve bu kılavuz bulunur.
 
-Bireysel NPC iş ve ev rotaları, yeni şehir etkinlikleri, ekonomi, ayrıntılı yakalama taktikleri, diğer taşıtların fiziği ve Chaos Missions görevlerinin oyun içi uyumluluk testleri tam sürüm için bekliyor.
+Belirli iş ve ev adreslerine giden bireysel NPC rotaları, yeni şehir etkinlikleri, ekonomi, ayrıntılı yakalama taktikleri, diğer taşıtların fiziği ve Chaos Missions görevlerinin oyun içi uyumluluk testleri tam sürüm için bekliyor.

@@ -39,6 +39,9 @@ constexpr std::uintptr_t ActiveScriptList = 0xA8B42C;
 constexpr std::uintptr_t ScriptPool = 0xA8B430;
 constexpr std::size_t ScriptSlotSize = 0xE0;
 constexpr std::size_t ScriptCount = 96;
+constexpr std::uintptr_t StandardWanderVtable = 0x85A200;
+constexpr std::uint32_t Walking = 4;
+constexpr std::uint32_t Jogging = 5;
 
 using ShotResponse = void(__thiscall*)(void* handler, const void* shot, void* activeTask, void* simplestTask);
 using PedReference = int(__cdecl*)(const void* ped);
@@ -61,6 +64,11 @@ using PopulationUpdate = void(__cdecl*)(bool);
 using RandomCars = void(__cdecl*)();
 using ProcessScripts = void(__cdecl*)();
 using AddAttractorPed = bool(__cdecl*)(int, const void*, ulw::Point, void*, int);
+using WanderControl = void*(__thiscall*)(void*, void*);
+using FootpathBlocked = bool(__thiscall*)(void*, void*, const std::uint32_t*);
+using FindChatPartner = bool(__thiscall*)(void*, void*);
+using PedLookHeading = void(__thiscall*)(void*, float, bool, bool);
+using PedLookTimer = void(__thiscall*)(void*, std::uint32_t);
 using FireWeapon = bool(__thiscall*)(void*, void*, const void*, const void*, const void*, const void*, const void*);
 using ProcessWheel = void(__thiscall*)(void*, void*, void*, void*, void*, int, float, float, float,
     std::int8_t, float*, std::int32_t*, std::uint16_t);
@@ -70,6 +78,7 @@ ulw::MissionState s_Missions{};
 ulw::PoliceSearch s_Police{};
 ulw::RoadblockAttempts s_Roadblocks{};
 ulw::CrashScenes s_Crashes{};
+ulw::CrashWitnesses s_CrashWitnesses{};
 ulw::RoadPhysics s_RoadPhysics{};
 struct EmergencyCar {
     ulw::Point position;
@@ -96,6 +105,8 @@ unsigned s_PatrolRoutes{};
 unsigned s_AttractorUses{};
 unsigned s_AirSearches{};
 unsigned s_RoadblockAttempts{};
+unsigned s_CrashGlances{};
+unsigned s_CrashReroutes{};
 unsigned s_AllocationFailures{};
 std::uint32_t s_LastLogTime{};
 std::uint32_t s_LastGameTime{};
@@ -105,6 +116,7 @@ bool s_StreetActive{};
 bool s_UseSightingForRoadblocks{};
 bool s_MissionObserver{};
 bool s_ExecutingScripts{};
+bool s_CrashGlancesEnabled{};
 std::uint32_t s_StreetTime{};
 
 template<typename T>
@@ -146,12 +158,13 @@ void LogActivity(std::uint32_t now) noexcept {
     using ulw::SearchPhase;
     char message[384]{};
     std::snprintf(message, sizeof(message),
-        "Look=%u Flee=%u Panic=%u taskPoolFailures=%u pursuitUpdates=%u reportUpdates=%u searchUpdates=%u patrolRoutes=%u airSearches=%u roadblockAttempts=%u limitedSpeedCalls=%u sirenSpeedCalls=%u crashSpeedCalls=%u attractorUses=%u",
+        "Look=%u Flee=%u Panic=%u taskPoolFailures=%u pursuitUpdates=%u reportUpdates=%u searchUpdates=%u patrolRoutes=%u airSearches=%u roadblockAttempts=%u limitedSpeedCalls=%u sirenSpeedCalls=%u crashSpeedCalls=%u attractorUses=%u crashGlances=%u crashReroutes=%u",
         s_Reactions[1], s_Reactions[2], s_Reactions[3], s_AllocationFailures,
         s_SearchStages[static_cast<unsigned>(SearchPhase::Pursue)],
         s_SearchStages[static_cast<unsigned>(SearchPhase::Respond)],
         s_SearchStages[static_cast<unsigned>(SearchPhase::Search)],
-        s_PatrolRoutes, s_AirSearches, s_RoadblockAttempts, s_RestrictedDrivers, s_YieldingDrivers, s_CrashSlowdowns, s_AttractorUses);
+        s_PatrolRoutes, s_AirSearches, s_RoadblockAttempts, s_RestrictedDrivers, s_YieldingDrivers, s_CrashSlowdowns,
+        s_AttractorUses, s_CrashGlances, s_CrashReroutes);
     Log(message);
     s_LastLogTime = now;
 }
@@ -224,6 +237,7 @@ void ClearStreetMemory() noexcept {
     s_AirPatrols = {};
     s_RoadPhysics.Reset();
     s_Crashes.Reset();
+    s_CrashWitnesses.Reset();
     s_Sirens = {};
 }
 
@@ -386,6 +400,84 @@ bool __cdecl OnAttractorPed(int model, const void* attractor, ulw::Point positio
 bool PedOnFoot(const void* ped) noexcept {
     return Read<std::uint8_t>(ped, 0x484) == 1 && Read<std::uint8_t>(ped, 0x2F) == 0 &&
         !(Read<std::uint8_t>(ped, 0x46D) & 0x07) && Read<float>(ped, 0x540) > 0.0f;
+}
+
+bool AmbientWalker(const void* task, const void* ped) noexcept {
+    if (!task || !ped || Read<std::uintptr_t>(task) != StandardWanderVtable || Read<const void*>(task, 0x04) ||
+        !PedOnFoot(ped)) {
+        return false;
+    }
+    const auto type = Read<std::uint32_t>(ped, 0x598);
+    return type == 4 || type == 5;
+}
+
+ulw::PedestrianRoutine PedestrianRoutineFor(const void* ped) noexcept {
+    return ulw::PickPedestrianRoutine(Read<std::uint16_t>(ped, 0x20), GameValue<std::uint8_t>(0xB70153),
+        GameValue<std::uint8_t>(0xB7014E), GameValue<std::uint16_t>(0xC81314), GameValue<float>(0xC81324));
+}
+
+void NoticeCrash(void* ped, std::uint32_t now) noexcept {
+    if (Read<std::uint8_t>(ped, 0x46C) & 0xBC || Read<std::uint32_t>(ped, 0x748) >= now ||
+        !GameValue<void*>(PedPool)) {
+        return;
+    }
+    const auto origin = EntityPosition(ped);
+    const auto incident = s_Crashes.Closest(origin, 12.0f, now);
+    if (!incident) {
+        return;
+    }
+    const auto reference = GameFunction<PedReference>(0x54FF60)(ped);
+    if (reference < 0 || (reference & 0x80)) {
+        return;
+    }
+    const auto id = static_cast<std::uint32_t>(reference);
+    if (s_CrashWitnesses.Noticed(id, *incident) ||
+        !s_CrashWitnesses.TakeScan(id, now, GameValue<std::uint32_t>(0xB7CB4C))) {
+        return;
+    }
+    const ulw::Point eye{origin.x, origin.y, origin.z + 0.65f};
+    auto target = incident->position;
+    target.z += 0.7f;
+    if (!GameFunction<LineClear>(0x56A490)(eye, target, true, false, false, true, true, false, false)) {
+        return;
+    }
+    const auto yaw = std::atan2(origin.x - target.x, target.y - origin.y);
+    GameFunction<PedLookHeading>(0x5DEDC0)(ped, yaw, false, false);
+    GameFunction<PedLookTimer>(0x5DF8D0)(ped, 900 + (Read<std::uint16_t>(ped, 0x20) & 0x1FFu));
+    s_CrashWitnesses.Remember(id, *incident);
+    ++s_CrashGlances;
+    LogActivity(now);
+}
+
+void* __fastcall OnWanderControl(void* task, void*, void* ped) noexcept {
+    const auto native = GameFunction<WanderControl>(0x674C30);
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    if (!AmbientWalker(task, ped) || !StreetActive(now)) {
+        return native(task, ped);
+    }
+    auto* const paceField = static_cast<std::byte*>(task) + 0x0C;
+    const auto previous = Read<std::uint32_t>(paceField);
+    const auto* const runningTask = Read<const void*>(task, 0x08);
+    const auto routine = PedestrianRoutineFor(ped);
+    const bool jog = previous == Walking && routine.pace == ulw::PedestrianPace::Jog;
+    if (jog) {
+        std::memcpy(paceField, &Jogging, sizeof(Jogging));
+    }
+    auto* const next = native(task, ped);
+    if (jog) {
+        std::memcpy(paceField, &previous, sizeof(previous));
+    }
+    if (s_CrashGlancesEnabled && next && next == runningTask) {
+        NoticeCrash(ped, now);
+    }
+    return next;
+}
+
+bool __fastcall OnChatPartner(void* task, void*, void* ped) noexcept {
+    if (AmbientWalker(task, ped) && StreetActive(GameValue<std::uint32_t>(0xB7CB84)) && !PedestrianRoutineFor(ped).chat) {
+        return false;
+    }
+    return GameFunction<FindChatPartner>(0x66FDA0)(task, ped);
 }
 
 bool __fastcall OnWeaponFire(void* weapon, void*, void* ped, const void* start, const void* muzzle,
@@ -606,6 +698,41 @@ void __cdecl OnSearchLight(const ulw::Point& origin, const ulw::Point& target,
     add(origin, target, radius, power, corona, clip, shadow);
 }
 
+const std::byte* ExteriorPathNode(std::uint32_t address, bool vehicle) noexcept {
+    const auto area = address & 0xFFFFu;
+    const auto index = address >> 16;
+    const auto counts = vehicle ? 0x970114u : 0x96FFF4u;
+    if (area >= 64 || index >= GameValue<std::uint32_t>(counts + area * sizeof(std::uint32_t))) {
+        return nullptr;
+    }
+    const auto* const nodes = GameValue<const std::byte*>(0x96F854 + area * sizeof(void*));
+    return nodes ? nodes + index * 0x1C : nullptr;
+}
+
+ulw::Point PathPosition(const std::byte* node) noexcept {
+    return {
+        static_cast<float>(Read<std::int16_t>(node, 0x08)) / 8.0f,
+        static_cast<float>(Read<std::int16_t>(node, 0x0A)) / 8.0f,
+        static_cast<float>(Read<std::int16_t>(node, 0x0C)) / 8.0f,
+    };
+}
+
+bool __fastcall OnFootpathBlocked(void* task, void*, void* ped, const std::uint32_t* address) noexcept {
+    if (GameFunction<FootpathBlocked>(0x671EF0)(task, ped, address)) {
+        return true;
+    }
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    if (!address || !AmbientWalker(task, ped) || !StreetActive(now)) {
+        return false;
+    }
+    const auto* const node = ExteriorPathNode(*address, false);
+    if (node && s_Crashes.ObstructsFootpath(EntityPosition(ped), PathPosition(node), now)) {
+        ++s_CrashReroutes;
+        return true;
+    }
+    return false;
+}
+
 bool __cdecl OnRoadblockNode(std::uint32_t address, float* width, ulw::Point* crossRoad) noexcept {
     const auto info = GameFunction<RoadblockNodeInfo>(0x460EE0);
     const auto now = GameValue<std::uint32_t>(0xB7CB84);
@@ -613,27 +740,19 @@ bool __cdecl OnRoadblockNode(std::uint32_t address, float* width, ulw::Point* cr
         return info(address, width, crossRoad);
     }
     const auto wanted = ActiveWantedLevel();
-    const auto area = address & 0xffffu;
-    const auto index = address >> 16;
-    if (wanted < 3 || !s_Roadblocks.Ready(now, wanted) || area >= 64 ||
-        index >= GameValue<std::uint32_t>(0x970114 + area * sizeof(std::uint32_t))) {
+    if (wanted < 3 || !s_Roadblocks.Ready(now, wanted)) {
         return false;
     }
-    const auto* const nodes = GameValue<const std::byte*>(0x96F854 + area * sizeof(void*));
-    if (!nodes) {
+    const auto* const node = ExteriorPathNode(address, true);
+    if (!node) {
         return false;
     }
-    const auto* const node = nodes + index * 0x1C;
     const auto flags = Read<std::uint8_t>(node, 0x18);
     const auto links = flags & 0x0Fu;
     if (links < 2 || (flags & 0xB0)) {
         return false;
     }
-    const ulw::Point road{
-        static_cast<float>(Read<std::int16_t>(node, 0x08)) / 8.0f,
-        static_cast<float>(Read<std::int16_t>(node, 0x0A)) / 8.0f,
-        static_cast<float>(Read<std::int16_t>(node, 0x0C)) / 8.0f,
-    };
+    const auto road = PathPosition(node);
     const auto* const player = GameFunction<PlayerVehicle>(0x56E0D0)(-1, false);
     if (!player || !info(address, width, crossRoad)) {
         return false;
@@ -931,6 +1050,25 @@ bool PatchCalls(std::initializer_list<std::uintptr_t> sites, std::uintptr_t orig
     return ready;
 }
 
+bool PatchTaskMethod(std::uintptr_t slot, std::uintptr_t original, std::uintptr_t replacement) noexcept {
+    std::array<std::uint8_t, sizeof(original)> expected{};
+    std::memcpy(expected.data(), &original, sizeof(original));
+    if (!Matches(slot, expected)) {
+        return false;
+    }
+    auto* const method = reinterpret_cast<void*>(slot);
+    DWORD protection{};
+    if (!VirtualProtect(method, sizeof(replacement), PAGE_READWRITE, &protection)) {
+        return false;
+    }
+    std::memcpy(method, &replacement, sizeof(replacement));
+    DWORD unused{};
+    if (!VirtualProtect(method, sizeof(replacement), protection, &unused)) {
+        Log("Warning: Windows did not restore a game task table page.");
+    }
+    return true;
+}
+
 using Entry = std::array<std::uint8_t, 8>;
 
 bool PedQueriesMatch() noexcept {
@@ -1013,15 +1151,14 @@ bool InstallMissionObserver() noexcept {
 }
 
 bool InstallTraffic() noexcept {
-    if (!Matches(0x434400, Entry{0x83, 0xEC, 0x24, 0x56, 0x8B, 0x74, 0x24, 0x2C}) ||
-        !PatchCalls({0x4347C3, 0x435302}, 0x434400, reinterpret_cast<std::uintptr_t>(&OnTrafficSpeed))) {
-        return false;
-    }
-    const bool sirens = VehicleQueriesMatch() &&
+    return Matches(0x434400, Entry{0x83, 0xEC, 0x24, 0x56, 0x8B, 0x74, 0x24, 0x2C}) &&
+        PatchCalls({0x4347C3, 0x435302}, 0x434400, reinterpret_cast<std::uintptr_t>(&OnTrafficSpeed));
+}
+
+bool InstallCarObservations() noexcept {
+    return VehicleQueriesMatch() &&
         Matches(0x41DA30, Entry{0x90, 0xE9, 0x12, 0x62, 0xFE, 0xFF, 0x6A, 0xFF}) &&
         PatchCalls({0x6B51CD, 0x6B52A2}, 0x41DA30, reinterpret_cast<std::uintptr_t>(&OnCarAI));
-    Log(sirens ? "Installed: siren and collision observations." : "Skipped: car observations.");
-    return true;
 }
 
 bool InstallPhysics() noexcept {
@@ -1049,6 +1186,26 @@ void InstallCity() noexcept {
     Log(attractors ? "Installed: neighborhood activity schedules." : "Skipped: pedestrian attractor function differs.");
 }
 
+bool InstallStreetPedestrians() noexcept {
+    const bool routines = Matches(0x674C30, Entry{0x83, 0xEC, 0x0C, 0x55, 0x56, 0x8B, 0xF1, 0x8B}) &&
+        PatchTaskMethod(StandardWanderVtable + 10 * sizeof(void*), 0x674C30,
+            reinterpret_cast<std::uintptr_t>(&OnWanderControl));
+    Log(routines ? "Installed: civilian walking routines." : "Skipped: civilian wander task differs.");
+    const bool social = Matches(0x672600, Entry{0x56, 0x8B, 0xF1, 0x8A, 0x46, 0x30, 0x84, 0xC0}) &&
+        Matches(0x66FDA0, Entry{0x6A, 0xFF, 0x68, 0x90, 0x55, 0x84, 0x00, 0x64}) &&
+        PatchCalls({0x672672}, 0x66FDA0, reinterpret_cast<std::uintptr_t>(&OnChatPartner));
+    Log(social ? "Installed: civilian conversation timing." : "Skipped: civilian conversation function differs.");
+    s_CrashGlancesEnabled = routines && PedQueriesMatch() &&
+        Matches(0x5DEDC0, Entry{0x56, 0x8B, 0xF1, 0x8B, 0x86, 0x48, 0x07, 0x00}) &&
+        Matches(0x5DF8D0, Entry{0xA1, 0x84, 0xCB, 0xB7, 0x00, 0x3B, 0x81, 0x48});
+    Log(s_CrashGlancesEnabled ? "Installed: civilian crash attention." : "Skipped: civilian looking function differs.");
+    const bool reroute = Matches(0x674560, Entry{0x83, 0xEC, 0x08, 0x56, 0x8B, 0xF1, 0x8B, 0x4E}) &&
+        Matches(0x671EF0, Entry{0x83, 0xEC, 0x18, 0x56, 0x8B, 0x74, 0x24, 0x20}) &&
+        PatchCalls({0x67458F, 0x6745E1}, 0x671EF0, reinterpret_cast<std::uintptr_t>(&OnFootpathBlocked));
+    Log(reroute ? "Installed: crash-aware footpaths." : "Skipped: footpath obstacle function differs.");
+    return s_CrashGlancesEnabled || reroute;
+}
+
 void Install(const std::filesystem::path& config) noexcept {
     if (!SupportedImage()) {
         Log("Skipped: this executable does not match the supported Hoodlum 1.0 US layout.");
@@ -1067,7 +1224,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.6.0");
+    Log("Ultimate Living World 0.7.0");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");
@@ -1092,8 +1249,10 @@ void Install(const std::filesystem::path& config) noexcept {
     if (GetPrivateProfileIntW(L"Modules", L"Roadblocks", 1, config.c_str())) {
         Log(InstallRoadblocks() ? "Installed: dynamic roadblock placement filter." : "Skipped: roadblock function differs.");
     }
+    bool traffic{};
     if (GetPrivateProfileIntW(L"Modules", L"Traffic", 1, config.c_str())) {
-        Log(InstallTraffic() ? "Installed: traffic speed limits." : "Skipped: traffic speed function differs.");
+        traffic = InstallTraffic();
+        Log(traffic ? "Installed: traffic speed limits." : "Skipped: traffic speed function differs.");
     }
     if (GetPrivateProfileIntW(L"Modules", L"VehiclePhysics", 1, config.c_str())) {
         Log(InstallPhysics() ? "Installed: road grip and braking." : "Skipped: wheel call sites differ.");
@@ -1101,8 +1260,13 @@ void Install(const std::filesystem::path& config) noexcept {
     if (GetPrivateProfileIntW(L"Modules", L"Combat", 1, config.c_str())) {
         Log(InstallCombat() ? "Installed: police and gang aiming profiles." : "Skipped: weapon function differs.");
     }
+    bool streetPedestrians{};
     if (GetPrivateProfileIntW(L"Modules", L"City", 1, config.c_str())) {
         InstallCity();
+        streetPedestrians = InstallStreetPedestrians();
+    }
+    if (traffic || streetPedestrians) {
+        Log(InstallCarObservations() ? "Installed: siren and collision observations." : "Skipped: car observations.");
     }
 }
 
