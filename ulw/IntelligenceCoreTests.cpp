@@ -496,6 +496,90 @@ void TestTrafficSpacing() {
     Check(horns.Allow(0x502, 10211, DriverProfile::Aggressive), "reset must discard queued horn state");
 }
 
+void TestTrafficLaneChanges() {
+    using ulw::DriverProfile;
+    ulw::TrafficLaneChanges lanes;
+    ulw::LaneOpportunity road{0x601, 1000, {0, 0, 0}, {1, 0, 0}, 1, 2,
+        5.4f, 0, 49, 6, 14, 2.4f, 1.0f, 0, DriverProfile::Average};
+    const ulw::LaneBody lead{0x701, 16, 0, 0, 1.8f, 0.0f, 2.7f, 1.1f, true};
+    const ulw::LaneBody rear{0x801, -25, -5.4f, 0, 24.0f, 0.0f, 2.5f, 1.05f, true};
+    const ulw::LaneBody crossing{0x901, 8, -8.5f, 0, 0.6f, 3.0f, 0.45f, 0.45f, false};
+    const ulw::LaneBody overpass{0xA01, 9, -5.4f, 6.0f, 0.0f, 0.0f, 2.5f, 1.1f, true};
+    auto tryAt = [&](std::uint32_t now, std::span<const ulw::LaneBody> actors) {
+        road.now = now;
+        Check(lanes.BeginProbe(road.vehicle, now, now / 20), "expected lane scan budget for this vehicle");
+        return lanes.Decide(road, actors);
+    };
+    const std::array slow{lead};
+    Check(!tryAt(1000, slow) && !tryAt(1660, slow), "a temporary slowdown should leave the current lane in place");
+    const std::array withRear{lead, rear};
+    Check(!tryAt(2700, withRear), "a fast vehicle closing from behind should block the pass");
+    const std::array withCrossing{lead, crossing};
+    Check(!tryAt(3050, withCrossing), "a pedestrian crossing into the prospective lane should block the pass");
+    const std::array elevated{lead, overpass};
+    const auto pass = tryAt(3400, elevated);
+    Check(pass && pass->lane == 0 && !pass->returning, "a clear adjacent same-direction lane should allow the pass");
+    lanes.Commit(road, *pass);
+
+    const auto original = road;
+    road.vehicle = 0x611;
+    Check(!tryAt(3500, slow) && !tryAt(3900, slow), "a reused pool slot must not inherit the previous driver's decision");
+    road = original;
+    road.lane = 0;
+    road.position.x = -5.4f;
+    auto alongside = lead;
+    alongside.along = 1.0f;
+    alongside.lateral = 5.4f;
+    const std::array hasNotPassed{alongside};
+    Check(!tryAt(4200, hasNotPassed), "a passing car must remain in its lane beside the blocker");
+    alongside.along = -7.0f;
+    const std::array justPassed{alongside};
+    Check(!tryAt(6400, justPassed), "the return gap must also leave room behind the passing car");
+    alongside.along = -19.0f;
+    const std::array clearReturn{alongside};
+    const auto back = tryAt(6800, clearReturn);
+    Check(!back, "discarded driver state must not issue a stale return after pool slot reuse");
+
+    lanes.Reset();
+    road = original;
+    Check(!tryAt(1000, slow), "reset should discard previous choices");
+    const auto passAgain = tryAt(2800, slow);
+    Check(passAgain && passAgain->lane == 0, "a resampled slow lead should permit a fresh pass");
+    lanes.Commit(road, *passAgain);
+    road.lane = 0;
+    road.position.x = -5.4f;
+    Check(!tryAt(6000, hasNotPassed) && !tryAt(6400, justPassed), "overtaking should require a sufficient rear gap");
+    const auto safeReturn = tryAt(6800, clearReturn);
+    Check(safeReturn && safeReturn->returning && safeReturn->lane == 1,
+        "the driver should return to its original lane after clearing the blocker");
+    lanes.Commit(road, *safeReturn);
+
+    lanes.Reset();
+    road = original;
+    auto other = road;
+    other.vehicle = 0xB01;
+    other.position.y = -5.0f;
+    Check(!tryAt(1000, slow), "the first driver must observe a persistent obstruction");
+    Check(lanes.BeginProbe(other.vehicle, 1000, 50) && !lanes.Decide(other, slow),
+        "the second driver must start its own wait");
+    const auto leadRequest = tryAt(2800, slow);
+    Check(leadRequest && leadRequest->lane == 0, "first adjacent lane reservation should be available");
+    lanes.Commit(road, *leadRequest);
+    other.now = 2810;
+    Check(lanes.BeginProbe(other.vehicle, other.now, 140) && !lanes.Decide(other, slow),
+        "two nearby drivers must not request the same gap");
+    other.now = 4600;
+    Check(lanes.BeginProbe(other.vehicle, other.now, 230) && lanes.Decide(other, slow).has_value(),
+        "a lane reservation should expire when the next driver resamples traffic");
+
+    lanes.Reset();
+    const auto early = lanes.BeginProbe(0x301, 1000, 51);
+    const auto repeated = lanes.BeginProbe(0x301, 1000, 51);
+    const auto second = lanes.BeginProbe(0x401, 1000, 51);
+    const auto third = lanes.BeginProbe(0x501, 1000, 51);
+    Check(early && !repeated && second && !third, "lane probes must honor per-vehicle timing and the global frame budget");
+}
+
 void TestEmergencyServices() {
     using ulw::EmergencyState;
     constexpr ulw::Point north{0, 1, 0}, east{1, 0, 0};
@@ -970,6 +1054,8 @@ int wmain(int argc, wchar_t** argv) {
         TestTrafficAndPhysics();
         TestTrafficSpacing();
         std::puts("Traffic: driver profiles, bends, headway, level separation and native stops passed.");
+        TestTrafficLaneChanges();
+        std::puts("Traffic lanes: sustained queues, closing traffic, pedestrian gaps, return and scan budgets passed.");
         TestEmergencyServices();
         std::puts("Emergency services: closing and crossing traffic, working crews and arrival braking passed.");
         std::puts("Pedestrians: routine timing, witness memory, and crash-aware footpaths passed.");

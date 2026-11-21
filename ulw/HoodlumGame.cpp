@@ -37,6 +37,8 @@ constexpr std::uintptr_t ArmedTaskVtable = 0x86D918;
 constexpr std::uintptr_t GunControlVtable = 0x86D76C;
 constexpr std::uintptr_t CarPathLinks = 0x96F974;
 constexpr std::uintptr_t CarPathLinkCounts = 0x970354;
+constexpr std::uintptr_t RoadNodes = 0x96F854;
+constexpr std::uintptr_t RoadNodeCounts = 0x970114;
 constexpr std::uintptr_t NativeArrestControl = 0x68D350;
 constexpr std::uintptr_t ArrestTaskVtable = 0x8709A8;
 constexpr std::uintptr_t KeyboardState = 0xB73190;
@@ -98,6 +100,10 @@ using WantedPointer = const void*(__cdecl*)(int);
 using TrafficSpeed = float(__cdecl*)(void*);
 using TrafficPair = void(__cdecl*)(const void*, void*, float*, float);
 using MissionSteering = void(__cdecl*)(void*, float*, float*, float*, bool*);
+using LaneOffset = float(__thiscall*)(const void*);
+using TrafficLight = bool(__cdecl*)(const void*, bool);
+using BridgeLight = bool(__cdecl*)(const void*);
+using CollisionModel = const void*(__thiscall*)(const void*);
 using CarAI = void(__cdecl*)(void*);
 using CarHorn = void(__thiscall*)(void*);
 using FlyHelicopter = void(__cdecl*)(void*, float, float, bool);
@@ -151,6 +157,7 @@ struct SurrenderApproach {
 SurrenderApproach s_SurrenderApproach{};
 std::optional<std::uint32_t> s_LastPoliceHint{};
 ulw::TrafficHorns s_TrafficHorns{};
+ulw::TrafficLaneChanges s_LaneChanges{};
 ulw::RoadblockAttempts s_Roadblocks{};
 ulw::CrashScenes s_Crashes{};
 ulw::CrashWitnesses s_CrashWitnesses{};
@@ -209,6 +216,8 @@ unsigned s_PatrolBraking{};
 unsigned s_BendLimits{};
 unsigned s_FollowingLimits{};
 unsigned s_QueueHornSkips{};
+unsigned s_LanePasses{};
+unsigned s_LaneReturns{};
 unsigned s_PoliceReports{};
 unsigned s_SuspicionWarnings{};
 unsigned s_InvestigationRoutes{};
@@ -299,6 +308,8 @@ void LogActivity(std::uint32_t now) noexcept {
     std::snprintf(message, sizeof(message), "interceptRoutes=%u patrolBraking=%u bendLimits=%u followingLimits=%u queueHornSkips=%u",
         s_InterceptRoutes, s_PatrolBraking, s_BendLimits, s_FollowingLimits, s_QueueHornSkips);
     Log(message);
+    std::snprintf(message, sizeof(message), "lanePasses=%u laneReturns=%u", s_LanePasses, s_LaneReturns);
+    Log(message);
     std::snprintf(message, sizeof(message), "policeReports=%u drivingWarnings=%u investigationRoutes=%u voluntaryArrests=%u",
         s_PoliceReports, s_SuspicionWarnings, s_InvestigationRoutes, s_VoluntaryArrests);
     Log(message);
@@ -379,6 +390,10 @@ ulw::Point EntityForward(const void* entity) noexcept {
     return {-std::sin(heading), std::cos(heading), 0.0f};
 }
 
+float Dot(ulw::Point left, ulw::Point right) noexcept {
+    return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
 void ClearStreetMemory() noexcept {
     s_Police.Reset();
     s_PatrolTeam.Reset();
@@ -388,6 +403,7 @@ void ClearStreetMemory() noexcept {
     s_SurrenderApproach = {};
     s_LastPoliceHint.reset();
     s_TrafficHorns.Reset();
+    s_LaneChanges.Reset();
     s_Roadblocks.Reset();
     s_AirPatrols = {};
     s_FlightGround = {};
@@ -1779,8 +1795,7 @@ void __cdecl OnServiceApproach(void* car, float* steer, float* gas, float* brake
     }
 }
 
-const void* NextRoadLink(const void* car) noexcept {
-    const auto route = Read<std::uint16_t>(car, 0x3A6);
+const void* RoadLink(std::uint16_t route) noexcept {
     if (route == 0xFFFF) {
         return nullptr;
     }
@@ -1793,7 +1808,7 @@ const void* NextRoadLink(const void* car) noexcept {
 
 float BendSpeedScale(const void* car, ulw::Point position, ulw::Point forward, float wet,
     ulw::DriverProfile driver) noexcept {
-    const auto* const next = NextRoadLink(car);
+    const auto* const next = RoadLink(Read<std::uint16_t>(car, 0x3A6));
     const auto sign = Read<std::int8_t>(car, 0x3B6);
     if (!next || (sign != -1 && sign != 1)) {
         return 1.0f;
@@ -1836,6 +1851,168 @@ bool AmbientTrafficCar(const void* car) noexcept {
 
 ulw::DriverProfile DriverForCar(const void* car) noexcept {
     return ulw::TrafficDriver(Read<std::uint16_t>(car, 0x20), Read<std::uint16_t>(car, 0x22), Read<float>(car, 0x8C));
+}
+
+bool PlainRoadNode(std::uint32_t address) noexcept {
+    const auto area = address & 0xFFFFu;
+    const auto index = address >> 16;
+    if (area >= 64 || index >= GameValue<std::uint32_t>(RoadNodeCounts + area * 4)) {
+        return false;
+    }
+    const auto* const nodes = GameValue<const std::byte*>(RoadNodes + area * 4);
+    return nodes && (Read<std::uint8_t>(nodes, index * 0x1C + 0x18) & 0xBFu) == 2;
+}
+
+struct LaneLink {
+    ulw::Point center{};
+    ulw::Point forward{};
+    int lanes{};
+};
+
+LaneLink ReadLaneLink(const void* link, int sign, int lane) noexcept {
+    if (!link || (sign != 1 && sign != -1) || lane < 0 || (Read<std::uint8_t>(link, 0x0C) & 7)) {
+        return {};
+    }
+    const auto limits = Read<unsigned char>(link, 0x0B);
+    const auto lanes = static_cast<int>((sign < 0 ? limits >> 3 : limits) & 7);
+    if (lanes < 2 || lane >= lanes) {
+        return {};
+    }
+    const ulw::Point forward{Read<std::int8_t>(link, 8) * static_cast<float>(sign) * 0.01f,
+        Read<std::int8_t>(link, 9) * static_cast<float>(sign) * 0.01f, 0.0f};
+    const auto length = std::hypot(forward.x, forward.y);
+    if (!(length > 0.97f && length < 1.03f)) {
+        return {};
+    }
+    const auto offset = (GameFunction<LaneOffset>(0x44DB00)(link) + static_cast<float>(lane)) * 5.4f;
+    const ulw::Point center{Read<std::int16_t>(link) * 0.125f + forward.y * offset,
+        Read<std::int16_t>(link, 2) * 0.125f - forward.x * offset, 0.0f};
+    return {center, {forward.x / length, forward.y / length, 0.0f}, lanes};
+}
+
+struct RoadFootprint {
+    float halfLength;
+    float halfWidth;
+};
+
+RoadFootprint RoadBodySize(const void* entity, unsigned type) noexcept {
+    const RoadFootprint fallback = type == 2 ? RoadFootprint{3.5f, 1.45f} :
+        type == 3 ? RoadFootprint{0.60f, 0.60f} : RoadFootprint{1.45f, 1.45f};
+    const auto* const model = GameFunction<CollisionModel>(0x535300)(entity);
+    if (!model) {
+        return fallback;
+    }
+    const auto low = Read<ulw::Point>(model);
+    const auto high = Read<ulw::Point>(model, sizeof(ulw::Point));
+    const auto width = std::max(std::abs(low.x), std::abs(high.x));
+    const auto length = std::max(std::abs(low.y), std::abs(high.y));
+    if (!(width >= 0.15f && width <= 16.0f && length >= 0.15f && length <= 32.0f)) {
+        return fallback;
+    }
+    return {length, width};
+}
+
+void TryTrafficLane(void* car, std::uint32_t now) noexcept {
+    constexpr int PhysicsStatus = 3;
+    if ((Read<unsigned char>(car, 0x36) >> 3) != PhysicsStatus || !AmbientTrafficCar(car) ||
+        Read<std::uint8_t>(car, 0x3BB) != 0 || (Read<std::uint8_t>(car, 0x3DB) & 0x18) ||
+        (Read<std::uint8_t>(car, 0x3DC) & 0x02) || !(Read<float>(car, 0x4C0) >= 420.0f) ||
+        GameValue<std::int32_t>(0xB72914) != 0 || !GameValue<void*>(VehiclePool) || !StreetActive(now)) {
+        return;
+    }
+    const auto lane = Read<std::int8_t>(car, 0x3B7);
+    if (lane < 0 || lane != Read<std::int8_t>(car, 0x3B8)) {
+        return;
+    }
+    const auto current = ReadLaneLink(RoadLink(Read<std::uint16_t>(car, 0x3A4)), Read<std::int8_t>(car, 0x3B5), lane);
+    const auto next = ReadLaneLink(RoadLink(Read<std::uint16_t>(car, 0x3A6)), Read<std::int8_t>(car, 0x3B6), lane);
+    if (current.lanes < 2 || next.lanes != current.lanes ||
+        Dot(current.forward, next.forward) < 0.985f || Dot(current.forward, EntityForward(car)) < 0.94f ||
+        !PlainRoadNode(Read<std::uint32_t>(car, 0x390)) || !PlainRoadNode(Read<std::uint32_t>(car, 0x394))) {
+        return;
+    }
+    const auto position = EntityPosition(car);
+    const auto axis = current.forward;
+    const ulw::Point right{axis.y, -axis.x, 0.0f};
+    const ulw::Point toCurrent{current.center.x - position.x, current.center.y - position.y, 0.0f};
+    const ulw::Point toNext{next.center.x - position.x, next.center.y - position.y, 0.0f};
+    const auto ahead = Dot(toNext, axis);
+    const auto laneCenter = Dot(toCurrent, right);
+    const auto speed = Dot(Read<ulw::Point>(car, 0x44), axis) * 50.0f;
+    const auto wet = GameValue<float>(0xC81308);
+    if (!(ahead >= 22.0f && ahead <= 150.0f && Dot(toCurrent, axis) <= 4.0f && std::abs(laneCenter) <= 1.65f &&
+        std::abs(Dot(toNext, right) - laneCenter) < 1.65f && speed >= -0.2f && speed <= 20.0f &&
+        wet >= 0.0f && wet < 0.82f && Fog() < 0.48f) ||
+        GameFunction<TrafficLight>(0x49D610)(car, true) || GameFunction<BridgeLight>(0x49D420)(car)) {
+        return;
+    }
+    const auto id = GameFunction<PedReference>(0x54FFC0)(car);
+    if (id < 0 || (id & 0x80) ||
+        !s_LaneChanges.BeginProbe(static_cast<std::uint32_t>(id), now, GameValue<std::uint32_t>(0xB7CB4C))) {
+        return;
+    }
+    const auto footprint = RoadBodySize(car, 2);
+    const auto cruise = std::clamp(Read<std::uint8_t>(car, 0x3D0) * 0.50f, 5.0f, 19.0f);
+    const ulw::LaneOpportunity road{static_cast<std::uint32_t>(id), now, position, right, lane, current.lanes,
+        5.4f, laneCenter, ahead, speed, cruise, footprint.halfLength, footprint.halfWidth, wet, DriverForCar(car)};
+
+    constexpr std::size_t ScanCapacity = 64;
+    std::array<void*, ScanCapacity> entities{};
+    std::int16_t found{};
+    GameFunction<NearbyEntities>(0x564A20)(position, 53.0f, true, &found, static_cast<std::int16_t>(entities.size()),
+        entities.data(), false, true, true, true, false);
+    if (found <= 0 || found >= static_cast<std::int16_t>(entities.size())) {
+        return;
+    }
+    std::array<ulw::LaneBody, ScanCapacity> bodies;
+    unsigned count{};
+    for (int i = 0; i < found; ++i) {
+        const auto* const entity = entities[static_cast<std::size_t>(i)];
+        if (!entity || entity == car || (Read<std::uint8_t>(entity, 0x1C) & 1) == 0) {
+            continue;
+        }
+        const auto type = Read<std::uint8_t>(entity, 0x36) & 7u;
+        if (type < 2 || type > 4) {
+            continue;
+        }
+        const auto other = EntityPosition(entity);
+        const ulw::Point gap{other.x - position.x, other.y - position.y, other.z - position.z};
+        if (std::abs(gap.z) >= 2.45f) {
+            continue;
+        }
+        const auto velocity = Read<ulw::Point>(entity, 0x44);
+        const auto forward = EntityForward(entity);
+        const auto alignment = Dot(forward, axis);
+        const auto body = RoadBodySize(entity, type);
+        const auto alongSize = body.halfLength * std::abs(alignment) + body.halfWidth * std::abs(Dot(forward, right));
+        const auto sideSize = body.halfWidth * std::abs(alignment) + body.halfLength * std::abs(Dot(forward, right));
+        const auto otherID = type == 2 ? GameFunction<PedReference>(0x54FFC0)(entity) : -1;
+        const bool alignedVehicle = otherID >= 0 && !(otherID & 0x80) && alignment >= 0.78f &&
+            Read<std::int32_t>(entity, 0x594) == 0;
+        bodies[count++] = {static_cast<std::uint32_t>(otherID), Dot(gap, axis), Dot(gap, right), gap.z,
+            Dot(velocity, axis) * 50.0f, Dot(velocity, right) * 50.0f, alongSize, sideSize, alignedVehicle};
+    }
+    const auto choice = s_LaneChanges.Decide(road, std::span<const ulw::LaneBody>{bodies.data(), count});
+    if (!choice) {
+        return;
+    }
+    const auto lateral = laneCenter + static_cast<float>(choice->lane - lane) * road.laneWidth;
+    const ulw::Point start{position.x + axis.x * 2.0f, position.y + axis.y * 2.0f, position.z + 0.55f};
+    const ulw::Point end{position.x + axis.x * 10.0f + right.x * lateral,
+        position.y + axis.y * 10.0f + right.y * lateral, start.z};
+    if (!GameFunction<LineClear>(0x56A490)(start, end, true, false, false, true, true, false, false)) {
+        return;
+    }
+    const auto selected = static_cast<std::int8_t>(choice->lane);
+    std::memcpy(static_cast<std::byte*>(car) + 0x3B8, &selected, sizeof(selected));
+    s_LaneChanges.Commit(road, *choice);
+    ++(choice->returning ? s_LaneReturns : s_LanePasses);
+    LogActivity(now);
+}
+
+void __cdecl OnTrafficSteering(void* car, float* steer, float* gas, float* brake, bool* handbrake) noexcept {
+    TryTrafficLane(car, GameValue<std::uint32_t>(0xB7CB84));
+    GameFunction<MissionSteering>(0x434900)(car, steer, gas, brake, handbrake);
 }
 
 void __fastcall OnTrafficHorn(void* car, void*) noexcept {
@@ -1894,10 +2071,6 @@ bool TunableRoadVehicle(const void* vehicle, bool motorcycle, std::uint32_t now)
     return Read<std::int32_t>(vehicle, 0x594) == type && Read<std::uint8_t>(vehicle, 0x2F) == 0 &&
         Read<std::int8_t>(vehicle, 0x424) < 0 && Read<std::uint8_t>(vehicle, 0x4A4) != 2 &&
         (Read<std::uint8_t>(vehicle, 0x36) >> 3) == 0 && GameValue<void*>(VehiclePool) && StreetActive(now);
-}
-
-float Dot(ulw::Point left, ulw::Point right) noexcept {
-    return left.x * right.x + left.y * right.y + left.z * right.z;
 }
 
 ulw::RoadVehicle RoadVehicleClass(const void* vehicle, bool motorcycle) noexcept {
@@ -2554,6 +2727,21 @@ bool InstallTraffic() noexcept {
         Matches(0x432599, std::array<std::uint8_t, 4>{0x52, 0x50, 0x56, 0x55}) &&
         PatchCalls({0x43259D}, 0x42D0E0, reinterpret_cast<std::uintptr_t>(&OnTrafficPair));
     Log(s_FollowingTraffic ? "Installed: driver-specific following gaps." : "Skipped: traffic pair function differs.");
+    const auto lanes = s_BendTraffic && VehicleQueriesMatch() &&
+        Matches(0x434900, Entry{0x83, 0xEC, 0x60, 0x55, 0x56, 0x8B, 0x74, 0x24}) &&
+        Matches(0x434AA2, std::array<std::uint8_t, 7>{0x0F, 0xBE, 0x86, 0xB7, 0x03, 0x00, 0x00}) &&
+        Matches(0x434ADE, std::array<std::uint8_t, 7>{0x0F, 0xBE, 0x86, 0xB8, 0x03, 0x00, 0x00}) &&
+        Matches(0x44DB00, Entry{0x51, 0x8A, 0x41, 0x0B, 0x8A, 0xD0, 0x80, 0xE2}) &&
+        Matches(0x42DF0E, std::array<std::uint8_t, 5>{0x0F, 0xB6, 0x44, 0x28, 0x18}) &&
+        Matches(0x49D610, Entry{0x83, 0xEC, 0x08, 0x53, 0x56, 0x8B, 0x74, 0x24}) &&
+        Matches(0x49D420, Entry{0x53, 0x56, 0x8B, 0x74, 0x24, 0x0C, 0x8B, 0xCE}) &&
+        Matches(0x564A20, Entry{0x83, 0xEC, 0x18, 0x53, 0x55, 0x56, 0x57, 0x8B}) &&
+        Matches(0x56A490, Entry{0x83, 0xEC, 0x5C, 0x66, 0x81, 0x3D, 0x78, 0xCD}) &&
+        Matches(0x535300, Entry{0x8A, 0x41, 0x36, 0x24, 0x07, 0x3C, 0x02, 0x75}) &&
+        Matches(0x4374D4, std::array<std::uint8_t, 4>{0x51, 0x52, 0x50, 0x56}) &&
+        PatchCalls({0x4374D8}, 0x434900, reinterpret_cast<std::uintptr_t>(&OnTrafficSteering));
+    Log(lanes ? "Installed: slow traffic passing and return on open lanes."
+        : "Skipped: lane steering or collision query differs.");
     const auto horns = VehicleQueriesMatch() &&
         Matches(0x6A3820, Entry{0x56, 0x8B, 0xF1, 0xF6, 0x86, 0xDB, 0x03, 0x00}) &&
         PatchCalls({0x6B5275, 0x6B52B8}, 0x6A3820, reinterpret_cast<std::uintptr_t>(&OnTrafficHorn));
@@ -2750,7 +2938,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.17.0");
+    Log("Ultimate Living World 0.18.0");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");

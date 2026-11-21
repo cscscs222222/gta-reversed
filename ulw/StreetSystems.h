@@ -4,6 +4,7 @@
 #include "VehicleDynamics.h"
 
 #include <optional>
+#include <span>
 
 namespace ulw {
 
@@ -139,6 +140,58 @@ private:
         std::optional<std::uint32_t> at{};
     };
     std::array<Request, 256> m_Requests{};
+};
+
+struct LaneBody {
+    std::uint32_t vehicle{};
+    float along{}, lateral{}, elevation{};
+    float forwardSpeed{}, lateralSpeed{}; // World metres per second.
+    float halfLength{}, halfWidth{};
+    bool alignedVehicle{};
+};
+
+struct LaneOpportunity {
+    std::uint32_t vehicle{};
+    std::uint32_t now{};
+    Point position{};
+    Point right{};
+    int lane{}, count{};
+    float laneWidth{}, laneCenter{}, spaceAhead{};
+    float speed{}, cruise{}, halfLength{}, halfWidth{}, wet{};
+    DriverProfile driver{};
+};
+
+struct LaneChoice {
+    int lane{};
+    bool returning{};
+};
+
+class TrafficLaneChanges {
+public:
+    bool BeginProbe(std::uint32_t vehicle, std::uint32_t now, std::uint32_t frame) noexcept;
+    std::optional<LaneChoice> Decide(const LaneOpportunity& road, std::span<const LaneBody> nearby) noexcept;
+    void Commit(const LaneOpportunity& road, LaneChoice choice) noexcept;
+    void Reset() noexcept;
+
+private:
+    struct Driver {
+        std::uint32_t vehicle{};
+        std::optional<std::uint32_t> blocker{};
+        std::uint32_t probed{}, waitingSince{}, changed{};
+        int original{-1}, target{-1};
+        bool sampled{};
+        bool moved{};
+    };
+    struct Reservation {
+        Point center{};
+        std::uint32_t vehicle{};
+        std::uint32_t at{};
+        bool active{};
+    };
+    std::array<Driver, 256> m_Drivers{};
+    std::array<Reservation, 8> m_Reservations{};
+    std::uint32_t m_Frame{};
+    unsigned m_Probes{}, m_NextReservation{};
 };
 
 struct TrafficInput {

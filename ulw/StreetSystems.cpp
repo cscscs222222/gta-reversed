@@ -327,6 +327,138 @@ void TrafficHorns::Reset() noexcept {
     m_Requests = {};
 }
 
+bool TrafficLaneChanges::BeginProbe(std::uint32_t vehicle, std::uint32_t now, std::uint32_t frame) noexcept {
+    if (m_Frame != frame) {
+        m_Frame = frame;
+        m_Probes = 0;
+    }
+    auto& driver = m_Drivers[(vehicle >> 8) % m_Drivers.size()];
+    if (m_Probes >= 2 || (driver.sampled && driver.vehicle == vehicle && now - driver.probed < 340)) {
+        return false;
+    }
+    if (!driver.sampled || driver.vehicle != vehicle || now - driver.probed > 8500) {
+        driver = {};
+    }
+    driver.vehicle = vehicle;
+    driver.probed = now;
+    driver.sampled = true;
+    ++m_Probes;
+    return true;
+}
+
+std::optional<LaneChoice> TrafficLaneChanges::Decide(const LaneOpportunity& road,
+    std::span<const LaneBody> nearby) noexcept {
+    auto& driver = m_Drivers[(road.vehicle >> 8) % m_Drivers.size()];
+    if (!driver.sampled || driver.vehicle != road.vehicle || driver.probed != road.now ||
+        road.lane < 0 || road.lane >= road.count || road.count < 2 ||
+        !(road.laneWidth >= 3.2f && road.laneWidth <= 6.0f && std::abs(road.laneCenter) <= 1.65f &&
+            road.spaceAhead >= 22.0f && road.speed >= -0.2f && road.speed <= 20.0f && road.cruise >= 5.0f &&
+            road.halfLength > 0.0f && road.halfLength <= 4.0f && road.halfWidth > 0.0f && road.halfWidth <= 1.55f &&
+            road.wet >= 0.0f && road.wet < 0.82f)) {
+        return std::nullopt;
+    }
+
+    if (driver.original >= 0 && (driver.original >= road.count || driver.target >= road.count ||
+        (road.lane != driver.original && road.lane != driver.target) || road.now - driver.changed > 16000)) {
+        driver.original = -1;
+        driver.target = -1;
+        driver.blocker.reset();
+    }
+    const bool returning = driver.original >= 0;
+    const auto target = returning ? driver.original : road.lane - 1;
+    if (target < 0 || (returning && (road.lane != driver.target || std::abs(road.lane - target) != 1)) ||
+        (driver.moved && road.now - driver.changed < (returning ? 2750u : 5200u))) {
+        return std::nullopt;
+    }
+
+    const auto center = road.laneCenter + static_cast<float>(target - road.lane) * road.laneWidth;
+    const auto targetWidth = road.halfWidth + 0.42f + 0.27f * Unit(road.wet);
+    const auto ahead = std::max(12.0f, 8.0f + road.speed * 0.75f);
+    const LaneBody* blocker = nullptr;
+    bool occupied = false;
+    bool passedBlocker = true;
+    for (const auto& body : nearby) {
+        if (!(std::abs(body.elevation) < 2.45f)) {
+            continue;
+        }
+        const auto bumper = road.halfLength + body.halfLength;
+        const bool sameLane = std::abs(body.lateral - road.laneCenter) < road.halfWidth + body.halfWidth + 0.45f;
+        if (sameLane && body.alignedVehicle && body.along > 0.0f && body.along < 24.0f &&
+            (!blocker || blocker->along > body.along)) {
+            blocker = &body;
+        }
+        if (returning && driver.blocker == body.vehicle && body.alignedVehicle && body.along > -bumper - 5.0f) {
+            passedBlocker = false;
+        }
+        const auto futureLateral = body.lateral + body.lateralSpeed * 1.25f;
+        if (std::min(body.lateral, futureLateral) > center + targetWidth + body.halfWidth ||
+            std::max(body.lateral, futureLateral) < center - targetWidth - body.halfWidth) {
+            continue;
+        }
+        const auto horizon = 1.5f + 0.38f * Unit(road.wet);
+        const auto gapAhead = bumper + ahead + horizon * std::max(0.0f, road.speed - body.forwardSpeed);
+        const auto gapBehind = bumper + 6.0f + horizon * std::max(0.0f, body.forwardSpeed - road.speed);
+        occupied |= body.along <= gapAhead && body.along >= -gapBehind;
+    }
+
+    if (!returning) {
+        if (road.speed > 15.0f || !blocker || !(blocker->forwardSpeed >= -0.5f && blocker->forwardSpeed <= road.cruise - 3.7f) ||
+            road.spaceAhead < blocker->along + 6.0f) {
+            driver.blocker.reset();
+            return std::nullopt;
+        }
+        if (driver.blocker != blocker->vehicle) {
+            driver.blocker = blocker->vehicle;
+            driver.waitingSince = road.now;
+            return std::nullopt;
+        }
+        const bool impatient = road.driver == DriverProfile::Hurried || road.driver == DriverProfile::Sport ||
+            road.driver == DriverProfile::Aggressive;
+        const auto delay = impatient ? 1050u : road.driver == DriverProfile::Careful ||
+            road.driver == DriverProfile::Learner || road.driver == DriverProfile::Truck ? 2400u : 1650u;
+        if (road.now - driver.waitingSince < delay ||
+            blocker->along < road.halfLength + blocker->halfLength + 2.1f + 0.30f * road.speed) {
+            return std::nullopt;
+        }
+    }
+    if (occupied || !passedBlocker) {
+        return std::nullopt;
+    }
+
+    const Point targetCenter{road.position.x + road.right.x * center, road.position.y + road.right.y * center,
+        road.position.z};
+    for (const auto& reservation : m_Reservations) {
+        if (reservation.active && reservation.vehicle != road.vehicle && road.now - reservation.at < 1600 &&
+            DistanceSquared(reservation.center, targetCenter) < 14.0f * 14.0f) {
+            return std::nullopt;
+        }
+    }
+    return LaneChoice{target, returning};
+}
+
+void TrafficLaneChanges::Commit(const LaneOpportunity& road, LaneChoice choice) noexcept {
+    auto& driver = m_Drivers[(road.vehicle >> 8) % m_Drivers.size()];
+    const auto center = road.laneCenter + static_cast<float>(choice.lane - road.lane) * road.laneWidth;
+    const Point targetCenter{road.position.x + road.right.x * center, road.position.y + road.right.y * center,
+        road.position.z};
+    m_Reservations[m_NextReservation++ % m_Reservations.size()] = {targetCenter, road.vehicle, road.now, true};
+    driver.changed = road.now;
+    driver.moved = true;
+    driver.original = choice.returning ? -1 : road.lane;
+    driver.target = choice.returning ? -1 : choice.lane;
+    if (choice.returning) {
+        driver.blocker.reset();
+    }
+}
+
+void TrafficLaneChanges::Reset() noexcept {
+    m_Drivers = {};
+    m_Reservations = {};
+    m_Frame = 0;
+    m_Probes = 0;
+    m_NextReservation = 0;
+}
+
 DrivePedals PatrolFollowing(DrivePedals native, unsigned wanted, Point offset, Point forward,
     Point policeVelocity, Point targetVelocity, float wet) noexcept {
     const auto ahead = offset.x * forward.x + offset.y * forward.y;

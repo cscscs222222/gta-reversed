@@ -1,4 +1,4 @@
-# Ultimate Living World 0.17.0
+# Ultimate Living World 0.18.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
@@ -8,7 +8,7 @@ Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 | Polis | Yaya ve araç ekipleri son görüş konumunu paylaşabilir. Silah sesi ve tanıklar bir olay yeri ihbarı oluşturabilir. Aranma seviyesi yokken devriyeler doğrudan gördükleri tehlikeli sürüşe uyarı verebilir ve kısa süre gözlemleyebilir. Düşük aranma seviyesinde oyuncu teslim olabilir. Üç yıldızdan itibaren ikinci ekip, görülen hareket yönüne göre yol kesme rotası seçebilir. |
 | Hava desteği | Serbest dolaşımda polis helikopteri görüş bilgisini devriyelerle paylaşır. Görüş kesilince son bildirilen bölgeyi tarar. Gece projektörü tarama konumuna yönelir. |
 | Barikatlar | Oyunun dinamik barikat adayları yol genişliği, araç hızı, takip bilgisi ve kamera görüşüne göre elenir. Oyun yol geometrisini ve barikat araçlarını kendi yönetir. |
-| Trafik | Sürücüler profil ve araç tipine göre farklı takip mesafesi bırakabilir. Yaklaşan dönüş ve sinyaller uygun yollarda hızı etkiler. Duran kuyruklarda tekrarlanan araç kornaları seyrekleşir. Sivil trafik yağmur, sis, kazalar ve sirenli araçlara tepki verir. |
+| Trafik | Sürücüler profil ve araç tipine göre farklı takip mesafesi bırakabilir. Düz, çok şeritli bir yolda uzun süre yavaş kalan aracın arkasındaki sürücü, yan şeritte güvenli boşluk varsa geçebilir. Ardından uygun mesafede kendi şeridine döner. Yaklaşan dönüş, sinyal, hava ve sirenler hızı etkiler. |
 | Acil servis | Ambulans ve itfaiye ekipleri, oyun tarafından belirlenen olay yerine yaklaşırken hızlarını daha erken düşürür. Islak zeminde ve siste fren daha erken başlar. Oyunun rota ve ekip görevleri kullanılır. |
 | Araç fiziği | Otomobil ve motosikletlerin her tekerleği temas ettiği yüzeye, yağmura, kaymaya ve lastik sıcaklığına göre farklı tepki verir. Otomobillerde süspansiyon sert sıkışmalara ve geri sekmeye uyarlanır. Gaz tepkisi ve vites geçiş noktaları sınıfa, gaza ve eğime göre değişir. Bölgesel hasar, motor ısısı ve fren yorgunluğu da sürüşü etkiler. |
 | Uçuş ve tekneler | Hafif uçakların, jetlerin ve nakliye uçaklarının dönüş tepkileri hız ve irtifa ile değişir. Ağır helikopterler daha kademeli tepki verir. Sürat tekneleri ve ağır tekneler farklı su direnci ve su üstünde kayma tepkisi kullanır. |
@@ -54,6 +54,8 @@ Serbest dolaşımda Stuntplane ve AT-400 ile kalkıp yeterli yüksekliğe ulaşt
 Ambulans veya itfaiye serbest dolaşımda bir olaya gelirken yavaşlamasını ve çevredeki trafiği gözle. `emergencyApproaches` olay yerine yaklaşırken değiştirilen gaz ve fren kararlarını, `emergencyYieldCalls` ise acil aracın etkisiyle düşürülen sivil hız sınırlarını sayar. `Emergency=0` acil ekiplerin yaklaşma davranışını, `Traffic=0` sivil araçlara uygulanan hız sınırlarını kapatır.
 
 Trafiği denemek için yağmurda viraja yaklaşan ağır araçları ve bir ışıkta durup yeniden hareket eden kuyruğu izle. `bendLimits`, `followingLimits` ve `queueHornSkips` sayaçları yeni kararları gösterir. Polis takibini denemek için serbest dolaşımda üç yıldızla açık bir yolda birden fazla devriye aracının seni gördüğü bir kovalamacaya gir. `interceptRoutes` yol kesme rotalarını, `patrolBraking` daha fazla takip mesafesi bırakılan kararları sayar.
+
+Sollamayı denemek için iyi görüşte, düz ve aynı yönde birden fazla şeridi olan bir yolda yavaş giden bir aracın arkasındaki sivil trafiği izle. Sürücü önce önündeki aracın hızını izler ve yan şeritte yaklaşan araçları veya yola çıkan yayaları hesaba katar. `lanePasses` ve `laneReturns` oyunun şerit yönlendirmesine gönderilen kararları sayar. Kavşaklarda, ışıklarda ve köprü geçişlerinde oyunun mevcut yönlendirmesi kullanılır.
 
 Teslim olmayı denemek için serbest dolaşımda bir veya iki yıldızdayken araçtan in, yumruğu seç ve hareketsiz dur. Peşindeki bir polis yakındayken **F9** tuşunu basılı tut. Polis yaklaşınca oyun kendi tutuklama akışını kullanır. `voluntaryArrests` başlatılan tutuklamaları, `policeReports`, `drivingWarnings` ve `investigationRoutes` devriye kararlarını gösterir. Silah sesi duyulduğunda polis yaklaşık olay yerini, görgü tanığı olduğunda gecikmeli olarak görülen olay yerini kullanabilir. Aranma yıldızlarını oyunun mevcut suç sistemi yönetir.
 
