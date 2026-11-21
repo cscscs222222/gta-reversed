@@ -598,6 +598,51 @@ void CrashScenes::Observe(const CrashObservation& crash) noexcept {
     }
 }
 
+std::optional<std::uint32_t> CrashScenes::RecentImpact(std::uint32_t vehicle, std::uint32_t now) const noexcept {
+    const auto& scene = m_Scenes[(vehicle >> 8) % m_Scenes.size()];
+    if (scene.status != Status::Empty && scene.vehicle == vehicle && now - scene.impactAt < 4200) {
+        return scene.impactAt;
+    }
+    return std::nullopt;
+}
+
+bool ShouldPullOver(const BreakdownEvidence& evidence) noexcept {
+    return evidence.health >= 255.0f && evidence.health <= 590.0f &&
+        (evidence.health <= 445.0f || evidence.engineDamage >= 145) &&
+        evidence.speed >= 0.0f && evidence.speed <= 8.5f && evidence.impactAge < 4200;
+}
+
+bool RoadsideSurface(unsigned surface, float slope, float heightDifference) noexcept {
+    const bool firm = (surface >= 1 && surface <= 3) || surface == 6 || surface == 26 || surface == 27 ||
+        surface == 85 || surface == 86;
+    return firm && slope >= 0.93f && slope <= 1.01f && std::abs(heightDifference) <= 0.42f;
+}
+
+RoadsideControl RoadsideResponse(const RoadsideInput& input) noexcept {
+    if (!input.clear || !(input.health >= 250.0f && input.health <= 610.0f) || input.elapsed > 13000 ||
+        !(input.speed >= -0.35f && input.speed < 12.0f) ||
+        !(input.ahead >= -1.8f && input.ahead < 24.0f && std::abs(input.sideways) <= 6.4f) ||
+        !std::isfinite(input.headingError)) {
+        return {};
+    }
+    if (input.ahead < 1.6f && std::abs(input.sideways) < 0.85f) {
+        if (input.stopped >= 4600) {
+            return {};
+        }
+        const bool severe = input.health <= 385.0f || input.engineDamage >= 180;
+        if (severe && input.stopped >= 1700) {
+            return {RoadsideAction::Leave, 0.0f, 0.0f, 0.60f};
+        }
+        return {RoadsideAction::Hold, 0.0f, 0.0f, 0.38f};
+    }
+    const auto travel = std::max(input.ahead, 0.0f);
+    const auto targetSpeed = std::clamp(travel * 0.48f, 1.05f, 5.2f);
+    const auto difference = input.speed - targetSpeed;
+    const auto steer = std::clamp(input.headingError * 0.95f, -0.34f, 0.34f);
+    return {RoadsideAction::Approach, steer, 0.25f * Unit(1.0f - difference * 0.27f),
+        0.55f * Unit(difference / 3.4f)};
+}
+
 bool CrashScenes::Ahead(Point position, Point forward, std::uint32_t now) const noexcept {
     for (const auto& scene : m_Scenes) {
         if (scene.status != Status::Stopped || now - scene.impactAt >= CrashLifetime || std::abs(scene.position.z - position.z) > 2.8f) {

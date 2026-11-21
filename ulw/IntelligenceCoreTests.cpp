@@ -617,6 +617,38 @@ void TestEmergencyServices() {
         "emergency braking must not weaken native brakes or change reverse behavior");
 }
 
+void TestRoadsideRecovery() {
+    using ulw::RoadsideAction;
+    ulw::CrashScenes scenes;
+    const ulw::CrashObservation collision{0x811, 1370, 1300, {}, 0.05f, 110.0f};
+    scenes.Observe(collision);
+    Check(scenes.RecentImpact(0x811, 1600) == 1300u && !scenes.RecentImpact(0x812, 1600) &&
+        !scenes.RecentImpact(0x811, 5600), "roadside stops must be tied to a recent impact on this vehicle");
+    Check(ulw::ShouldPullOver({430, 110, 6.0f, 600}) && ulw::ShouldPullOver({565, 162, 2.0f, 100}) &&
+        !ulw::ShouldPullOver({950, 0, 3.0f, 100}) && !ulw::ShouldPullOver({320, 160, 21.0f, 200}) &&
+        !ulw::ShouldPullOver({210, 180, 3.0f, 200}) && !ulw::ShouldPullOver({420, 150, 2.0f, 7200}),
+        "only a damaged, slow and currently controllable car should attempt a pull-over");
+    Check(ulw::RoadsideSurface(6, 0.99f, -0.25f) && ulw::RoadsideSurface(85, 0.95f, 0.13f) &&
+        !ulw::RoadsideSurface(4, 1.0f, 0.10f) && !ulw::RoadsideSurface(39, 1.0f, 0.0f) &&
+        !ulw::RoadsideSurface(1, 0.7f, 0.0f) && !ulw::RoadsideSurface(2, 1.0f, 0.65f),
+        "shoulder traces must reject pavements, water, steep slopes and height changes");
+    ulw::RoadsideInput input{11.0f, 4.2f, -0.29f, 7.3f, 420, 130, 400, 0, true};
+    const auto approach = ulw::RoadsideResponse(input);
+    Check(approach.action == RoadsideAction::Approach && approach.steer < 0.0f &&
+        approach.gasCap < 0.25f && approach.brake > 0.0f, "pulling in should steer toward the shoulder and slow down");
+    input.clear = false;
+    Check(ulw::RoadsideResponse(input).action == RoadsideAction::End, "an occupied shoulder should cancel the approach");
+    input = {0.8f, 0.3f, 0.0f, 0.0f, 420, 110, 6000, 2000, true};
+    auto stopped = ulw::RoadsideResponse(input);
+    Check(stopped.action == RoadsideAction::Hold && stopped.gasCap == 0.0f && stopped.brake > 0.0f,
+        "a moderate breakdown should hold the brakes briefly while stopped on the shoulder");
+    input.health = 360;
+    Check(ulw::RoadsideResponse(input).action == RoadsideAction::Leave,
+        "a severely damaged car should let the driver leave once stopped");
+    input.stopped = 5000;
+    Check(ulw::RoadsideResponse(input).action == RoadsideAction::End, "a disabled exit task must not block traffic indefinitely");
+}
+
 void TestCombat() {
     const auto closeCop = ulw::CombatAccuracy(60, 6, 100, 36, 0, 0, 12);
     const auto closeGang = ulw::CombatAccuracy(60, 7, 100, 36, 0, 0, 12);
@@ -1056,6 +1088,8 @@ int wmain(int argc, wchar_t** argv) {
         std::puts("Traffic: driver profiles, bends, headway, level separation and native stops passed.");
         TestTrafficLaneChanges();
         std::puts("Traffic lanes: sustained queues, closing traffic, pedestrian gaps, return and scan budgets passed.");
+        TestRoadsideRecovery();
+        std::puts("Roadside: recent impacts, valid shoulders, approach braking, stopping and native exit requests passed.");
         TestEmergencyServices();
         std::puts("Emergency services: closing and crossing traffic, working crews and arrival braking passed.");
         std::puts("Pedestrians: routine timing, witness memory, and crash-aware footpaths passed.");

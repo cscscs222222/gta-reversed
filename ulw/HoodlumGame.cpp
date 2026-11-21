@@ -86,6 +86,8 @@ static_assert(sizeof(CollisionPoint) == 0x2C);
 using TraceLine = bool(__cdecl*)(const ulw::Point&, const ulw::Point&, CollisionPoint&, void*&,
     bool, bool, bool, bool, bool, bool, bool, bool);
 using GroundHeight = float(__cdecl*)(ulw::Point, bool*, void**);
+using VerticalTrace = bool(__cdecl*)(const ulw::Point&, float, CollisionPoint&, void*&,
+    bool, bool, bool, bool, bool, bool, void*);
 using ReserveCover = void*(__cdecl*)(void*, const ulw::Point&, bool);
 using CoverCoordinates = bool(__cdecl*)(const void*, void*, const ulw::Point&, ulw::Point&);
 using ReleaseCover = void(__thiscall*)(void*, void*);
@@ -124,6 +126,9 @@ using AttractorManager = void*(__cdecl*)();
 using EmptyAttractorSlot = bool(__thiscall*)(void*, const void*, const void*);
 using UseAttractor = void*(__thiscall*)(void*, const void*, void*);
 using UsePhone = void*(__thiscall*)(void*, int);
+using LeaveCar = void*(__thiscall*)(void*, void*, int, int, bool);
+using ActiveTask = const void*(__thiscall*)(const void*);
+using AssignTask = void(__thiscall*)(void*, void*, int, bool);
 using WanderControl = void*(__thiscall*)(void*, void*);
 using FootpathBlocked = bool(__thiscall*)(void*, void*, const std::uint32_t*);
 using FindChatPartner = bool(__thiscall*)(void*, void*);
@@ -158,6 +163,18 @@ SurrenderApproach s_SurrenderApproach{};
 std::optional<std::uint32_t> s_LastPoliceHint{};
 ulw::TrafficHorns s_TrafficHorns{};
 ulw::TrafficLaneChanges s_LaneChanges{};
+struct RoadsideStop {
+    std::uint32_t car{};
+    int driver{};
+    std::uint32_t started{}, checked{};
+    std::optional<std::uint32_t> stationary{};
+    ulw::Point target{}, axis{};
+    float halfWidth{};
+    bool attemptedExit{};
+};
+std::optional<RoadsideStop> s_Roadside{};
+std::optional<std::uint32_t> s_LastPullOver{};
+std::optional<std::uint32_t> s_LastShoulderProbe{};
 ulw::RoadblockAttempts s_Roadblocks{};
 ulw::CrashScenes s_Crashes{};
 ulw::CrashWitnesses s_CrashWitnesses{};
@@ -218,6 +235,9 @@ unsigned s_FollowingLimits{};
 unsigned s_QueueHornSkips{};
 unsigned s_LanePasses{};
 unsigned s_LaneReturns{};
+unsigned s_RoadsideStarts{};
+unsigned s_RoadsideParked{};
+unsigned s_RoadsideExits{};
 unsigned s_PoliceReports{};
 unsigned s_SuspicionWarnings{};
 unsigned s_InvestigationRoutes{};
@@ -246,6 +266,8 @@ bool s_PressureObserver{};
 bool s_CoverFollowup{};
 bool s_FollowingTraffic{};
 bool s_BendTraffic{};
+bool s_RoadsideEnabled{};
+bool s_RoadsideExit{};
 bool s_PoliceWitnesses{};
 bool s_PoliceCruise{};
 bool s_PoliceHud{};
@@ -309,6 +331,9 @@ void LogActivity(std::uint32_t now) noexcept {
         s_InterceptRoutes, s_PatrolBraking, s_BendLimits, s_FollowingLimits, s_QueueHornSkips);
     Log(message);
     std::snprintf(message, sizeof(message), "lanePasses=%u laneReturns=%u", s_LanePasses, s_LaneReturns);
+    Log(message);
+    std::snprintf(message, sizeof(message), "roadsideStarts=%u roadsideParked=%u roadsideExits=%u",
+        s_RoadsideStarts, s_RoadsideParked, s_RoadsideExits);
     Log(message);
     std::snprintf(message, sizeof(message), "policeReports=%u drivingWarnings=%u investigationRoutes=%u voluntaryArrests=%u",
         s_PoliceReports, s_SuspicionWarnings, s_InvestigationRoutes, s_VoluntaryArrests);
@@ -404,6 +429,9 @@ void ClearStreetMemory() noexcept {
     s_LastPoliceHint.reset();
     s_TrafficHorns.Reset();
     s_LaneChanges.Reset();
+    s_Roadside.reset();
+    s_LastPullOver.reset();
+    s_LastShoulderProbe.reset();
     s_Roadblocks.Reset();
     s_AirPatrols = {};
     s_FlightGround = {};
@@ -1875,7 +1903,7 @@ LaneLink ReadLaneLink(const void* link, int sign, int lane) noexcept {
     }
     const auto limits = Read<unsigned char>(link, 0x0B);
     const auto lanes = static_cast<int>((sign < 0 ? limits >> 3 : limits) & 7);
-    if (lanes < 2 || lane >= lanes) {
+    if (lane >= lanes) {
         return {};
     }
     const ulw::Point forward{Read<std::int8_t>(link, 8) * static_cast<float>(sign) * 0.01f,
@@ -2010,9 +2038,239 @@ void TryTrafficLane(void* car, std::uint32_t now) noexcept {
     LogActivity(now);
 }
 
+bool ClearShoulder(const void* car, ulw::Point from, ulw::Point to, float halfWidth) noexcept {
+    const auto dx = to.x - from.x;
+    const auto dy = to.y - from.y;
+    const auto distance = std::hypot(dx, dy);
+    if (!(distance <= 23.0f)) {
+        return false;
+    }
+    const auto line = GameFunction<LineClear>(0x56A490);
+    if (distance > 0.5f && !line(from, to, true, false, false, true, true, false, false)) {
+        return false;
+    }
+    const ulw::Point middle{(from.x + to.x) * 0.5f, (from.y + to.y) * 0.5f, from.z};
+    std::array<void*, 40> entities{};
+    std::int16_t count{};
+    GameFunction<NearbyEntities>(0x564A20)(middle, distance * 0.5f + 12.0f, false, &count,
+        static_cast<std::int16_t>(entities.size()), entities.data(), false, true, true, true, false);
+    if (count >= static_cast<std::int16_t>(entities.size())) {
+        return false;
+    }
+    for (int i = 0; i < count; ++i) {
+        const auto* const item = entities[static_cast<std::size_t>(i)];
+        if (!item || item == car || !(Read<std::uint8_t>(item, 0x1C) & 1)) {
+            continue;
+        }
+        const auto type = Read<std::uint8_t>(item, 0x36) & 7u;
+        if (type < 2 || type > 4) {
+            continue;
+        }
+        const auto position = EntityPosition(item);
+        const auto velocity = Read<ulw::Point>(item, 0x44);
+        const auto footprint = RoadBodySize(item, type);
+        const auto reach = halfWidth + 0.45f + std::max(footprint.halfWidth, footprint.halfLength);
+        const auto reachesLane = [&](float x, float y) {
+            const auto progress = distance > 0.5f
+                ? std::clamp(((x - from.x) * dx + (y - from.y) * dy) / (distance * distance), 0.0f, 1.0f) : 1.0f;
+            const auto gapX = x - from.x - dx * progress;
+            const auto gapY = y - from.y - dy * progress;
+            return gapX * gapX + gapY * gapY <= reach * reach;
+        };
+        if (std::abs(position.z - middle.z) < 2.1f &&
+            (reachesLane(position.x, position.y) || reachesLane(position.x + velocity.x * 43.0f, position.y + velocity.y * 43.0f))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<CollisionPoint> GroundAt(ulw::Point point) noexcept {
+    CollisionPoint hit{};
+    void* ground{};
+    point.z += 1.1f;
+    if (GameFunction<VerticalTrace>(0x5674E0)(point, point.z - 3.9f, hit, ground,
+            true, false, false, false, true, false, nullptr)) {
+        return hit;
+    }
+    return std::nullopt;
+}
+
+std::optional<RoadsideStop> PlanRoadside(const void* car, std::uint32_t key, int driver,
+    std::uint32_t now, ulw::Point position) noexcept {
+    const auto lane = Read<std::int8_t>(car, 0x3B7);
+    const auto current = ReadLaneLink(RoadLink(Read<std::uint16_t>(car, 0x3A4)), Read<std::int8_t>(car, 0x3B5), lane);
+    const auto next = ReadLaneLink(RoadLink(Read<std::uint16_t>(car, 0x3A6)), Read<std::int8_t>(car, 0x3B6), lane);
+    if (lane < 0 || lane != current.lanes - 1 || lane != Read<std::int8_t>(car, 0x3B8) ||
+        current.lanes != next.lanes || Dot(current.forward, next.forward) < 0.985f ||
+        Dot(current.forward, EntityForward(car)) < 0.935f || !PlainRoadNode(Read<std::uint32_t>(car, 0x390)) ||
+        !PlainRoadNode(Read<std::uint32_t>(car, 0x394)) || GameFunction<TrafficLight>(0x49D610)(car, true) ||
+        GameFunction<BridgeLight>(0x49D420)(car)) {
+        return std::nullopt;
+    }
+    const auto footprint = RoadBodySize(car, 2);
+    const auto axis = current.forward;
+    const ulw::Point right{axis.y, -axis.x, 0};
+    const auto laneCenter = Dot({current.center.x - position.x, current.center.y - position.y, 0}, right);
+    const auto freeLength = Dot({next.center.x - position.x, next.center.y - position.y, 0}, axis);
+    if (!(footprint.halfLength <= 3.4f && footprint.halfWidth <= 1.42f &&
+        std::abs(laneCenter) <= 1.55f && freeLength >= 23.0f)) {
+        return std::nullopt;
+    }
+    const auto along = std::clamp(freeLength * 0.46f, 11.0f, 15.0f);
+    const auto side = laneCenter + 2.7f + footprint.halfWidth + 0.22f;
+    const ulw::Point road{position.x + axis.x * (along * 0.54f), position.y + axis.y * (along * 0.54f), position.z};
+    const auto origin = GroundAt(road);
+    if (!origin) {
+        return std::nullopt;
+    }
+    const ulw::Point target{position.x + axis.x * along + right.x * side,
+        position.y + axis.y * along + right.y * side, position.z};
+    for (const auto sample : std::array<ulw::Point, 4>{{
+        target,
+        {road.x + right.x * side * 0.5f, road.y + right.y * side * 0.5f, road.z},
+        {target.x + axis.x * footprint.halfLength + right.x * footprint.halfWidth,
+            target.y + axis.y * footprint.halfLength + right.y * footprint.halfWidth, target.z},
+        {target.x - axis.x * footprint.halfLength - right.x * footprint.halfWidth,
+            target.y - axis.y * footprint.halfLength - right.y * footprint.halfWidth, target.z},
+    }}) {
+        const auto ground = GroundAt(sample);
+        if (!ground || !ulw::RoadsideSurface(Read<std::uint8_t>(&*ground, 0x23),
+                Read<ulw::Point>(&*ground, 0x10).z, ground->position.z - origin->position.z)) {
+            return std::nullopt;
+        }
+    }
+    auto from = position;
+    from.x += axis.x * footprint.halfLength;
+    from.y += axis.y * footprint.halfLength;
+    if (!ClearShoulder(car, from, target, footprint.halfWidth)) {
+        return std::nullopt;
+    }
+    return RoadsideStop{key, driver, now, now, {}, target, axis, footprint.halfWidth, false};
+}
+
+bool TryLeaveDamagedCar(void* car, void* driver) noexcept {
+    if (!s_RoadsideExit || !GameValue<void*>(TaskPool) || Read<std::uint8_t>(car, 0x484) != 0) {
+        return false;
+    }
+    auto* const intelligence = Read<std::byte*>(driver, 0x47C);
+    if (!intelligence) {
+        return false;
+    }
+    auto* const manager = intelligence + 4;
+    const auto* const active = GameFunction<ActiveTask>(0x681720)(manager);
+    const auto vtable = active ? Read<std::uintptr_t>(active) : 0;
+    if (vtable != 0x86E96C && vtable != 0x86E904) {
+        return false;
+    }
+    auto* const memory = GameFunction<AllocateTask>(0x61A5A0)(0x1C);
+    if (!memory) {
+        ++s_AllocationFailures;
+        return false;
+    }
+    auto* const leave = GameFunction<LeaveCar>(0x63BDD0)(memory, car, 0, 250, true);
+    GameFunction<AssignTask>(0x681AF0)(manager, leave, 3, false);
+    ++s_RoadsideExits;
+    return true;
+}
+
+ulw::RoadsideControl TrafficBreakdown(void* car, std::uint32_t now) noexcept {
+    const bool eligible = s_RoadsideEnabled && (Read<std::uint8_t>(car, 0x36) >> 3) == 3 &&
+        AmbientTrafficCar(car) && Read<std::uint8_t>(car, 0x3BB) == 0 &&
+        (Read<std::uint8_t>(car, 0x428) & 0x18) == 0x10 && !(Read<std::uint8_t>(car, 0x42A) & 0x08) &&
+        GameValue<void*>(VehiclePool) && GameValue<void*>(PedPool) &&
+        GameValue<std::int32_t>(0xB72914) == 0 && StreetActive(now);
+    if (!eligible) {
+        return {};
+    }
+    if (s_Roadside && now - s_Roadside->started > 13000) {
+        s_Roadside.reset();
+    }
+    const auto reference = GameFunction<PedReference>(0x54FFC0)(car);
+    if (reference < 0 || (reference & 0x80) ||
+        (s_Roadside && s_Roadside->car != static_cast<std::uint32_t>(reference))) {
+        return {};
+    }
+    auto* const driver = Read<void*>(car, 0x460);
+    if (!driver || Read<std::uint32_t>(driver, 0x598) < 4 ||
+        Read<std::uint32_t>(driver, 0x598) > 5 || !(Read<float>(driver, 0x540) > 0)) {
+        return {};
+    }
+    const auto key = static_cast<std::uint32_t>(reference);
+    const auto hit = s_Crashes.RecentImpact(key, now);
+    if (!s_Roadside && (!hit || (s_LastPullOver && now - *s_LastPullOver < 12000) ||
+            (s_LastShoulderProbe && now - *s_LastShoulderProbe < 480))) {
+        return {};
+    }
+    const auto position = EntityPosition(car);
+    const auto velocity = Read<ulw::Point>(car, 0x44);
+    const auto facing = EntityForward(car);
+    const auto speed = Dot(velocity, facing) * 50.0f;
+    const auto health = Read<float>(car, 0x4C0);
+    const auto engine = Read<std::uint8_t>(car, 0x5A4);
+    const auto driverRef = GameFunction<PedReference>(0x54FF60)(driver);
+    if (driverRef < 0 || (driverRef & 0x80) || (s_Roadside && s_Roadside->driver != driverRef)) {
+        s_Roadside.reset();
+        return {};
+    }
+    if (!s_Roadside) {
+        if (!ulw::ShouldPullOver({health, engine, speed, now - *hit})) {
+            return {};
+        }
+        s_LastShoulderProbe = now;
+        s_Roadside = PlanRoadside(car, key, driverRef, now, position);
+        if (!s_Roadside) {
+            return {};
+        }
+        s_LastPullOver = now;
+        ++s_RoadsideStarts;
+        LogActivity(now);
+    }
+    auto& stop = *s_Roadside;
+    const ulw::Point toGoal{stop.target.x - position.x, stop.target.y - position.y, stop.target.z - position.z};
+    const ulw::Point right{facing.y, -facing.x, 0};
+    const ulw::Point roadRight{stop.axis.y, -stop.axis.x, 0};
+    const auto ahead = Dot(toGoal, stop.axis);
+    const auto side = Dot(toGoal, roadRight);
+    bool clear = std::abs(toGoal.z) <= 1.45f && Dot(facing, stop.axis) >= 0.73f;
+    if (clear && now - stop.checked >= 240) {
+        stop.checked = now;
+        clear = ClearShoulder(car, position, stop.target, stop.halfWidth);
+    }
+    if (ahead < 1.6f && ahead >= -1.8f && std::abs(side) < 0.85f && std::hypot(velocity.x, velocity.y) < 0.0084f) {
+        if (!stop.stationary) {
+            stop.stationary = now;
+            ++s_RoadsideParked;
+        }
+    } else {
+        stop.stationary.reset();
+    }
+    const auto result = ulw::RoadsideResponse({ahead, side,
+        std::atan2(-Dot(toGoal, right), std::max(1.6f, Dot(toGoal, facing))), speed, health, engine,
+        now - stop.started, stop.stationary ? now - *stop.stationary : 0, clear});
+    if (result.action == ulw::RoadsideAction::End) {
+        s_Roadside.reset();
+    } else if (result.action == ulw::RoadsideAction::Leave && !stop.attemptedExit) {
+        stop.attemptedExit = true;
+        TryLeaveDamagedCar(car, driver);
+    }
+    return result;
+}
+
 void __cdecl OnTrafficSteering(void* car, float* steer, float* gas, float* brake, bool* handbrake) noexcept {
-    TryTrafficLane(car, GameValue<std::uint32_t>(0xB7CB84));
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    const auto recovery = TrafficBreakdown(car, now);
+    if (recovery.action == ulw::RoadsideAction::End) {
+        TryTrafficLane(car, now);
+    }
     GameFunction<MissionSteering>(0x434900)(car, steer, gas, brake, handbrake);
+    if (recovery.action != ulw::RoadsideAction::End && *gas >= 0.0f) {
+        if (!*handbrake && *brake < 0.46f) {
+            *steer = recovery.steer;
+        }
+        *gas = std::min(*gas, recovery.gasCap);
+        *brake = std::max(*brake, recovery.brake);
+    }
 }
 
 void __fastcall OnTrafficHorn(void* car, void*) noexcept {
@@ -2742,6 +3000,20 @@ bool InstallTraffic() noexcept {
         PatchCalls({0x4374D8}, 0x434900, reinterpret_cast<std::uintptr_t>(&OnTrafficSteering));
     Log(lanes ? "Installed: slow traffic passing and return on open lanes."
         : "Skipped: lane steering or collision query differs.");
+    s_RoadsideEnabled = lanes && PedQueriesMatch() &&
+        Matches(0x5674E0, Entry{0x83, 0xEC, 0x2C, 0x90, 0x90, 0x90, 0x90, 0xE9}) &&
+        Matches(0x407C37, Entry{0x66, 0x83, 0x3D, 0x78, 0xCD, 0xB7, 0x00, 0xFF}) &&
+        Matches(0x43522C, std::array<std::uint8_t, 4>{0xD8, 0x64, 0x24, 0x1C});
+    s_RoadsideExit = s_RoadsideEnabled &&
+        Matches(0x428A41, std::array<std::uint8_t, 9>{0x8B, 0x80, 0x7C, 0x04, 0x00, 0x00, 0x8D, 0x48, 0x04}) &&
+        Matches(0x681720, Entry{0x33, 0xC0, 0x83, 0x3C, 0x81, 0x00, 0x75, 0x09}) &&
+        Matches(0x681AF0, Entry{0x53, 0x8B, 0x5C, 0x24, 0x08, 0x85, 0xDB, 0x56}) &&
+        Matches(0x61A5A0, Entry{0x8B, 0x0D, 0xA8, 0x44, 0xB7, 0x00, 0xE9, 0x55}) &&
+        Matches(0x63BDD0, Entry{0x6A, 0xFF, 0x68, 0xF8, 0x16, 0x84, 0x00, 0x64});
+    Log(s_RoadsideEnabled ? "Installed: shoulder searches and damaged traffic stops."
+        : "Skipped: roadside collision query or steering differs.");
+    Log(s_RoadsideExit ? "Installed: native driver exit after severe roadside damage."
+        : "Skipped: roadside driver exit task differs.");
     const auto horns = VehicleQueriesMatch() &&
         Matches(0x6A3820, Entry{0x56, 0x8B, 0xF1, 0xF6, 0x86, 0xDB, 0x03, 0x00}) &&
         PatchCalls({0x6B5275, 0x6B52B8}, 0x6A3820, reinterpret_cast<std::uintptr_t>(&OnTrafficHorn));
@@ -2938,7 +3210,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.18.0");
+    Log("Ultimate Living World 0.19.0");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");

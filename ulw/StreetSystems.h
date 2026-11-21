@@ -248,6 +248,7 @@ struct CrashSite {
 class CrashScenes {
 public:
     void Observe(const CrashObservation& observation) noexcept;
+    std::optional<std::uint32_t> RecentImpact(std::uint32_t vehicle, std::uint32_t now) const noexcept;
     bool Ahead(Point position, Point forward, std::uint32_t now) const noexcept;
     std::optional<CrashSite> Closest(Point position, float radius, std::uint32_t now) const noexcept;
     bool ObstructsFootpath(Point from, Point nextNode, std::uint32_t now) const noexcept;
@@ -263,6 +264,39 @@ private:
     };
     std::array<Scene, 16> m_Scenes{};
 };
+
+struct BreakdownEvidence {
+    float health{};
+    unsigned engineDamage{};
+    float speed{};
+    std::uint32_t impactAge{};
+};
+
+bool ShouldPullOver(const BreakdownEvidence& evidence) noexcept;
+bool RoadsideSurface(unsigned surface, float slope, float heightDifference) noexcept;
+
+enum class RoadsideAction : std::uint8_t { End, Approach, Hold, Leave };
+
+struct RoadsideInput {
+    float ahead{};
+    float sideways{};
+    float headingError{};
+    float speed{};
+    float health{};
+    unsigned engineDamage{};
+    std::uint32_t elapsed{};
+    std::uint32_t stopped{};
+    bool clear{};
+};
+
+struct RoadsideControl {
+    RoadsideAction action{};
+    float steer{};
+    float gasCap{1.0f};
+    float brake{};
+};
+
+RoadsideControl RoadsideResponse(const RoadsideInput& input) noexcept;
 
 enum class PedestrianPace : std::uint8_t { Walk, Jog };
 
