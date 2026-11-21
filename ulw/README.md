@@ -1,4 +1,4 @@
-# Ultimate Living World 0.10.0
+# Ultimate Living World 0.11.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
@@ -11,7 +11,7 @@ Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 | Trafik | Sivil sürücüler yağmur, sis, gece ve çarpışma nedeniyle yavaşlayabilir. Sirenli aracın gerçekten yaklaşıp yaklaşmadığı, rotaların kesişmesi ve araçların aynı seviyede olması hesaba katılır. Olay yerinde duran ekiplere doğru giden trafik de yavaşlayabilir. |
 | Acil servis | Ambulans ve itfaiye ekipleri, oyun tarafından belirlenen olay yerine yaklaşırken hızlarını daha erken düşürür. Islak zeminde ve siste fren daha erken başlar. Oyunun rota ve ekip görevleri kullanılır. |
 | Araç fiziği | Oyuncunun serbest dolaşımda kullandığı otomobil ve motosikletlerin tutuşu, frenleri ve çekişi yol ve hasar durumuna göre değişir. Düşük hızda uzun süre tam gaz kalan hasarlı motor daha çabuk ısınır ve geçici güç kaybeder. Otomobilin hasarlı çamurluğu veya tamponu yakınındaki tekerlekleri etkiler. |
-| Çatışma | Serbest dolaşımda oyuncuya ateş eden polis ve çete üyelerinin isabeti mesafe, aydınlık, hava ve can durumuna göre değişir. Sağlıklı NPC'ler otomatik silahlarla daha uzun seriler ateşler. Oyuncu aynı NPC'yi kısa aralıklarla vurursa NPC'nin isabeti geçici olarak düşer ve otomatik atış serileri kısalır. |
+| Çatışma | Sağlıklı polis ve çete üyeleri otomatik silahlarla daha uzun seriler ateşler. Aynı NPC kısa aralıklarla vurulduğunda isabeti geçici olarak düşer ve serileri kısalır. Açıkta kalan silahlı NPC, oyun yakın ve ulaşılabilir bir siper noktası sunarsa oraya koşabilir. Koruma ve yaklaşma yolu oyunun çarpışma verisinden kontrol edilir. |
 | Şehir | Trafik ve sivil yaya yoğunluğu saat, gün, bölge ve hava durumuna göre değişir. Mevcut durakların, bankların, yiyecek noktalarının ve yağmur barınaklarının kullanımı bu koşullara uyarlanır. Bazı yayalar hafta içi yoğun saatlerde veya yağmurda daha hızlı ilerler. Sokakta konuşma eğilimi de saate, şehre ve yağmura göre değişir. |
 | Görevler | ULW görev işaretlerini ve motorun çalışan görev betiğini izler. Görevlerde, ara sahnelerde ve görev sonu toparlanma sırasında yeni dünya davranışlarını askıya alır. |
 
@@ -47,6 +47,8 @@ Araçları denemek için serbest dolaşımda aynı motosikletle kuru ve ıslak y
 Ambulans veya itfaiye serbest dolaşımda bir olaya gelirken yavaşlamasını ve çevredeki trafiği gözle. `emergencyApproaches` olay yerine yaklaşırken değiştirilen gaz ve fren kararlarını, `emergencyYieldCalls` ise acil aracın etkisiyle düşürülen sivil hız sınırlarını sayar. `Emergency=0` acil ekiplerin yaklaşma davranışını, `Traffic=0` sivil araçlara uygulanan hız sınırlarını kapatır.
 
 Çatışma değişikliklerini denemek için serbest dolaşımda bir bölge savaşında AK-47 veya Micro Uzi taşıyan bir düşmanla karşılaş. Düşmanın ilk atış serilerini ve peş peşe iki isabetten sonraki serilerini karşılaştır. Günlükte `extendedBursts` uzatılan serileri, `shorterBursts` kısaltılanları ve `suppressionHits` baskıyı başlatan veya uzatan isabetleri sayar. `Combat=0` bu davranışları ve isabet ayarını kapatır.
+
+Siper aramayı denemek için dış mekânda duvar köşesi veya duran bir aracın yakınında, yaklaşık 10–20 metre uzaktaki silahlı bir düşmana onu öldürmeden iki kez isabet ettir. `coverSearches` yapılan aramaları, `coverMoves` ise hareket görevi verilen NPC'leri sayar. Bu sürüm oyunun mevcut siper noktalarını kullanır. Hareketin sahada nasıl göründüğünün doğrulanması için oyun testi gerekir.
 
 Günlük oyun zamanı ilerledikçe NPC kaçışı, devriye rotaları, hava araması, barikat yerleşim denemeleri, kazaya bağlı yavaşlama ve etkinlik noktalarının kullanımını sayar. `AirSupport` ve `Roadblocks` ayarları yeni sistemleri ayrı ayrı kapatır. Farklı bir ASI aynı oyun çağrısını önceden değiştirmişse Ultimate Living World ilgili bağlantıyı atlar ve durumu kaydeder. ASI değişikliklerini oyun kapalıyken yap.
 

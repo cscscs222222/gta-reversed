@@ -366,6 +366,45 @@ void TestCombat() {
     Check(!pressure.Suppressed(replacement, 7801), "leaving street mode must discard hit history");
 }
 
+void TestCombatCover() {
+    constexpr ulw::Point fighter{0, 0, 1};
+    constexpr ulw::Point threat{0, 18, 1};
+    Check(ulw::CombatCoverInRange(fighter, threat) &&
+        !ulw::CombatCoverInRange(fighter, {0, 3, 1}) &&
+        !ulw::CombatCoverInRange(fighter, {0, 39, 1}) &&
+        !ulw::CombatCoverInRange(fighter, {0, 18, 5}), "only nearby gunfights on similar elevations can divert to cover");
+    Check(ulw::CombatCoverApproach(fighter, threat, {4, -1, 1}) &&
+        ulw::CombatCoverApproach(fighter, threat, {3, 1, 1}), "lateral and retreating routes should qualify");
+    Check(!ulw::CombatCoverApproach(fighter, threat, {2, 3, 1}) &&
+        !ulw::CombatCoverApproach(fighter, threat, {0, -13, 1}) &&
+        !ulw::CombatCoverApproach(fighter, threat, {0, -5, -2}) &&
+        !ulw::CombatCoverApproach(fighter, threat, {0, -1, 1}),
+        "cover routes must avoid advancing into fire, distant retreats, drops and points already occupied");
+
+    ulw::CombatPressure pressure;
+    constexpr std::array<std::uint32_t, 3> fighters{0x301, 0x401, 0x501};
+    for (const auto ped : fighters) {
+        pressure.RecordHit(ped, 1000, 1000);
+        Check(!pressure.TakeCoverSearch(ped, 1000, 1), "the first hit should not start a cover search");
+        pressure.RecordHit(ped, 1500, 1500);
+    }
+    Check(pressure.TakeCoverSearch(fighters[0], 1500, 2) && pressure.TakeCoverSearch(fighters[1], 1500, 2) &&
+        !pressure.TakeCoverSearch(fighters[2], 1500, 2) && pressure.TakeCoverSearch(fighters[2], 1516, 3),
+        "cover searches must fit the frame budget without penalizing deferred NPCs");
+    pressure.RecordHit(fighters[0], 2000, 2000);
+    Check(!pressure.TakeCoverSearch(fighters[0], 2000, 4), "additional hits must preserve the cover cooldown");
+    pressure.RecordHit(fighters[0], 5800, 5800);
+    pressure.RecordHit(fighters[0], 6200, 6200);
+    Check(!pressure.TakeCoverSearch(fighters[0], 6299, 5) && pressure.TakeCoverSearch(fighters[0], 6300, 6),
+        "a later pressure episode may trigger cover after the cooldown");
+    constexpr std::uint32_t replacement = 0x302;
+    pressure.RecordHit(replacement, 6500, 6500);
+    pressure.RecordHit(replacement, 6700, 6700);
+    Check(pressure.TakeCoverSearch(replacement, 6700, 7), "a reused pool slot must not inherit a cover cooldown");
+    pressure.Reset();
+    Check(!pressure.TakeCoverSearch(replacement, 6701, 8), "mission transitions must clear pending cover searches");
+}
+
 void TestVehicleDamageAndCooling() {
     const ulw::WheelForces native{0.2f, 0.3f, 0.2f};
     ulw::RoadPhysics road;
@@ -530,6 +569,8 @@ int wmain(int argc, wchar_t** argv) {
         std::puts("Campaign: native and script mission signals, special profiles, cleanup, and reset passed.");
         TestCombat();
         std::puts("Combat: aiming profiles, burst limits, timed suppression and ped slot reuse passed.");
+        TestCombatCover();
+        std::puts("Combat cover: approach limits, search budgets, cooldown and slot reuse passed.");
         TestCityActivity();
         std::puts("City: rush hour, regional nightlife and weather schedules passed.");
         if (argc == 2) {

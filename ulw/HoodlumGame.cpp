@@ -29,6 +29,9 @@ constexpr std::uintptr_t NativeFireResponse = 0x4BBFB0;
 constexpr std::uintptr_t NativeDamageResponse = 0x4C0170;
 constexpr std::uintptr_t NativeGunTask = 0x62A380;
 constexpr std::uintptr_t GunTaskVtable = 0x86D724;
+constexpr std::uintptr_t NativeArmedControl = 0x62CCE0;
+constexpr std::uintptr_t ArmedTaskVtable = 0x86D918;
+constexpr std::uintptr_t GunControlVtable = 0x86D76C;
 constexpr std::uintptr_t PedPool = 0xB74490;
 constexpr std::uintptr_t TaskPool = 0xB744A8;
 constexpr std::uintptr_t VehiclePool = 0xB74494;
@@ -49,8 +52,21 @@ constexpr std::uint32_t Jogging = 5;
 using ShotResponse = void(__thiscall*)(void* handler, const void* shot, void* activeTask, void* simplestTask);
 using DamageResponse = void(__thiscall*)(void*, const void*, void*, void*, void*);
 using GunTask = bool(__thiscall*)(void*, void*);
+using ArmedControl = void*(__thiscall*)(void*, void*);
 using PedReference = int(__cdecl*)(const void* ped);
 using LineClear = bool(__cdecl*)(const ulw::Point&, const ulw::Point&, bool, bool, bool, bool, bool, bool, bool);
+struct CollisionPoint {
+    ulw::Point position;
+    std::array<std::byte, 0x20> fields;
+};
+static_assert(sizeof(CollisionPoint) == 0x2C);
+using TraceLine = bool(__cdecl*)(const ulw::Point&, const ulw::Point&, CollisionPoint&, void*&,
+    bool, bool, bool, bool, bool, bool, bool, bool);
+using GroundHeight = float(__cdecl*)(ulw::Point, bool*, void**);
+using ReserveCover = void*(__cdecl*)(void*, const ulw::Point&, bool);
+using CoverCoordinates = bool(__cdecl*)(const void*, void*, const ulw::Point&, ulw::Point&);
+using ReleaseCover = void(__thiscall*)(void*, void*);
+using RunToPoint = void*(__thiscall*)(void*, unsigned, const ulw::Point&, float, bool, bool);
 using AllocateTask = void*(__cdecl*)(std::size_t);
 using TurnToPoint = void*(__thiscall*)(void*, const ulw::Point&, float, float);
 using FleePoint = void*(__thiscall*)(void*, const ulw::Point&, bool, float, int);
@@ -113,6 +129,8 @@ unsigned s_EmergencyApproaches{};
 unsigned s_ExtendedBursts{};
 unsigned s_ShorterBursts{};
 unsigned s_SuppressionHits{};
+unsigned s_CoverSearches{};
+unsigned s_CoverMoves{};
 unsigned s_AllocationFailures{};
 std::uint32_t s_LastLogTime{};
 std::uint32_t s_LastGameTime{};
@@ -163,16 +181,16 @@ void LogActivity(std::uint32_t now) noexcept {
         return;
     }
     using ulw::SearchPhase;
-    char message[512]{};
+    char message[576]{};
     std::snprintf(message, sizeof(message),
-        "Look=%u Flee=%u Panic=%u taskPoolFailures=%u pursuitUpdates=%u reportUpdates=%u searchUpdates=%u patrolRoutes=%u airSearches=%u roadblockAttempts=%u limitedSpeedCalls=%u emergencyYieldCalls=%u crashSpeedCalls=%u attractorUses=%u crashGlances=%u crashReroutes=%u emergencyApproaches=%u extendedBursts=%u shorterBursts=%u suppressionHits=%u",
+        "Look=%u Flee=%u Panic=%u taskPoolFailures=%u pursuitUpdates=%u reportUpdates=%u searchUpdates=%u patrolRoutes=%u airSearches=%u roadblockAttempts=%u limitedSpeedCalls=%u emergencyYieldCalls=%u crashSpeedCalls=%u attractorUses=%u crashGlances=%u crashReroutes=%u emergencyApproaches=%u extendedBursts=%u shorterBursts=%u suppressionHits=%u coverSearches=%u coverMoves=%u",
         s_Reactions[1], s_Reactions[2], s_Reactions[3], s_AllocationFailures,
         s_SearchStages[static_cast<unsigned>(SearchPhase::Pursue)],
         s_SearchStages[static_cast<unsigned>(SearchPhase::Respond)],
         s_SearchStages[static_cast<unsigned>(SearchPhase::Search)],
         s_PatrolRoutes, s_AirSearches, s_RoadblockAttempts, s_RestrictedDrivers, s_YieldingDrivers, s_CrashSlowdowns,
         s_AttractorUses, s_CrashGlances, s_CrashReroutes, s_EmergencyApproaches,
-        s_ExtendedBursts, s_ShorterBursts, s_SuppressionHits);
+        s_ExtendedBursts, s_ShorterBursts, s_SuppressionHits, s_CoverSearches, s_CoverMoves);
     Log(message);
     s_LastLogTime = now;
 }
@@ -504,12 +522,17 @@ unsigned StreetFighterFaction(const void* ped) noexcept {
     return (attackWave || Read<std::uint8_t>(ped, 0x484) == 1) ? faction : 0;
 }
 
-bool IsSuppressed(const void* ped, std::uint32_t now) noexcept {
-    if (!s_PressureObserver || !GameValue<void*>(PedPool)) {
-        return false;
+int StreetPedReference(const void* ped) noexcept {
+    if (!GameValue<void*>(PedPool)) {
+        return -1;
     }
     const auto ref = GameFunction<PedReference>(0x54FF60)(ped);
-    return ref >= 0 && !(ref & 0x80) && s_CombatPressure.Suppressed(static_cast<std::uint32_t>(ref), now);
+    return ref >= 0 && !(ref & 0x80) ? ref : -1;
+}
+
+bool IsSuppressed(const void* ped, std::uint32_t now) noexcept {
+    const auto ref = s_PressureObserver ? StreetPedReference(ped) : -1;
+    return ref >= 0 && s_CombatPressure.Suppressed(static_cast<std::uint32_t>(ref), now);
 }
 
 void __fastcall OnDamageResponse(void* handler, void*, const void* event, void* active,
@@ -520,9 +543,9 @@ void __fastcall OnDamageResponse(void* handler, void*, const void* event, void* 
     // Only damage already calculated by the game counts as a hit.
     if (weapon >= 22 && weapon <= 34 && IsPlayerPed(Read<const void*>(event, 0x14)) &&
         Read<bool>(event, 0x42) && (Read<float>(event, 0x38) > 0 || Read<float>(event, 0x3C) > 0) &&
-        StreetFighterFaction(victim) && StreetActive(now) && GameValue<void*>(PedPool)) {
-        const auto ref = GameFunction<PedReference>(0x54FF60)(victim);
-        if (ref >= 0 && !(ref & 0x80) &&
+        StreetFighterFaction(victim) && StreetActive(now)) {
+        const auto ref = StreetPedReference(victim);
+        if (ref >= 0 &&
             s_CombatPressure.RecordHit(static_cast<std::uint32_t>(ref), Read<std::uint32_t>(event, 0x18), now)) {
             ++s_SuppressionHits;
         }
@@ -567,6 +590,91 @@ bool __fastcall OnGunTask(void* task, void*, void* ped) noexcept {
         ++(adjusted > native ? s_ExtendedBursts : s_ShorterBursts);
     }
     return finished;
+}
+
+bool HasCoverGround(ulw::Point position) noexcept {
+    auto probe = position;
+    probe.z += 0.35f;
+    bool found{};
+    const auto ground = GameFunction<GroundHeight>(0x5696C0)(probe, &found, nullptr);
+    const auto height = position.z - ground;
+    return found && height >= 0.45f && height <= 1.65f;
+}
+
+bool SafeCoverRoute(ulw::Point origin, ulw::Point threat, ulw::Point destination) noexcept {
+    if (!ulw::CombatCoverApproach(origin, threat, destination)) {
+        return false;
+    }
+    auto originHead = origin;
+    auto coverHead = destination;
+    originHead.z += 0.5f;
+    coverHead.z += 0.5f;
+    threat.z += 0.5f;
+    const auto trace = GameFunction<TraceLine>(0x56BA00);
+    CollisionPoint impact{};
+    void* obstacle{};
+    // Use the weapon trace's see-through and shoot-through material checks.
+    if (trace(threat, originHead, impact, obstacle, true, true, false, true, true, true, false, true) ||
+        !trace(threat, coverHead, impact, obstacle, true, true, false, true, true, true, false, true) ||
+        !(ulw::DistanceSquared(impact.position, coverHead) <= 4.0f * 4.0f)) {
+        return false;
+    }
+
+    const ulw::Point midpoint{(origin.x + destination.x) * 0.5f, (origin.y + destination.y) * 0.5f,
+        (origin.z + destination.z) * 0.5f};
+    const auto clear = GameFunction<LineClear>(0x56A490);
+    return HasCoverGround(destination) && HasCoverGround(midpoint) &&
+        clear(origin, destination, true, true, false, true, true, false, false) &&
+        clear(originHead, coverHead, true, true, false, true, true, false, false);
+}
+
+void* __fastcall OnArmedControl(void* task, void*, void* ped) noexcept {
+    const auto current = GameFunction<ArmedControl>(NativeArmedControl)(task, ped);
+    const auto* const target = Read<const void*>(task, 0x0C);
+    if (!current || current != Read<void*>(task, 0x08) || Read<std::uintptr_t>(current) != GunControlVtable ||
+        !IsPlayerPed(target) || Read<std::uint8_t>(target, 0x2F) != 0 ||
+        (Read<std::uint8_t>(target, 0x46D) & 0x07) || !StreetFighterFaction(ped) ||
+        (Read<std::uint8_t>(ped, 0x46E) & 0x70) || Read<void*>(ped, 0x788)) {
+        return current;
+    }
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    if (!StreetActive(now) || !GameValue<void*>(TaskPool)) {
+        return current;
+    }
+    const auto ref = StreetPedReference(ped);
+    if (ref < 0 || !s_CombatPressure.Suppressed(static_cast<std::uint32_t>(ref), now)) {
+        return current;
+    }
+
+    const auto origin = EntityPosition(ped);
+    const auto threat = EntityPosition(target);
+    if (!ulw::CombatCoverInRange(origin, threat) ||
+        !s_CombatPressure.TakeCoverSearch(static_cast<std::uint32_t>(ref), now, GameValue<std::uint32_t>(0xB7CB4C))) {
+        return current;
+    }
+    ++s_CoverSearches;
+    auto* const point = GameFunction<ReserveCover>(0x6992B0)(ped, threat, false);
+    if (!point) {
+        return current;
+    }
+
+    ulw::Point destination{};
+    if (GameFunction<CoverCoordinates>(0x699570)(point, ped, threat, destination)) {
+        destination.z += 1.0f; // Match the height adjustment in the native cover task.
+        if (SafeCoverRoute(origin, threat, destination)) {
+            if (auto* const move = GameFunction<AllocateTask>(0x61A5A0)(0x30)) {
+                auto* const path = GameFunction<RunToPoint>(0x667CD0)(move, 6, destination, 0.5f, true, false);
+                *reinterpret_cast<void**>(static_cast<std::byte*>(ped) + 0x788) = point;
+                ++s_CoverMoves;
+                // The native task manager adopts the new subtask and resumes
+                // its normal attack logic at the end of the run.
+                return path;
+            }
+            ++s_AllocationFailures;
+        }
+    }
+    GameFunction<ReleaseCover>(0x698EF0)(point, ped);
+    return current;
 }
 
 bool __fastcall OnWeaponFire(void* weapon, void*, void* ped, const void* start, const void* muzzle,
@@ -1330,10 +1438,24 @@ void InstallCombat() noexcept {
         PatchTaskMethod(GunTaskVtable + 7 * sizeof(void*), NativeGunTask,
             reinterpret_cast<std::uintptr_t>(&OnGunTask));
     Log(bursts ? "Installed: police and gang automatic bursts." : "Skipped: gun task differs.");
-    s_PressureObserver = (aiming || bursts) && PedQueriesMatch() &&
+    s_PressureObserver = PedQueriesMatch() &&
         Matches(NativeDamageResponse, Entry{0x64, 0xA1, 0, 0, 0, 0, 0x6A, 0xFF}) &&
         PatchCalls({0x4C3961}, NativeDamageResponse, reinterpret_cast<std::uintptr_t>(&OnDamageResponse));
     Log(s_PressureObserver ? "Installed: gunfire suppression from player hits." : "Skipped: damage dispatcher differs.");
+    const bool cover = s_PressureObserver &&
+        Matches(NativeArmedControl, Entry{0x83, 0xEC, 0x30, 0x53, 0x55, 0x56, 0x57, 0x8B}) &&
+        Matches(ArmedTaskVtable + 8 * sizeof(void*), std::array<std::uint8_t, 4>{0x90, 0xC1, 0x62, 0}) &&
+        Matches(0x62C3DF, Entry{0x57, 0x8B, 0xCE, 0xE8, 0x19, 0x51, 0xFF, 0xFF}) &&
+        Matches(0x6992B0, Entry{0x83, 0xEC, 0x28, 0xD9, 0x05, 0x9C, 0x99, 0x85}) &&
+        Matches(0x699570, Entry{0x8B, 0x44, 0x24, 0x04, 0x8B, 0x50, 0x14, 0x81}) &&
+        Matches(0x698EF0, Entry{0x53, 0x8B, 0x5C, 0x24, 0x08, 0x56, 0x57, 0x8D}) &&
+        Matches(0x56BA00, Entry{0x83, 0xEC, 0x60, 0x66, 0x81, 0x3D, 0x78, 0xCD}) &&
+        Matches(0x5696C0, Entry{0x83, 0xEC, 0x38, 0x8B, 0x44, 0x24, 0x3C, 0x8B}) &&
+        Matches(0x61A5A0, Entry{0x8B, 0x0D, 0xA8, 0x44, 0xB7, 0x00, 0xE9, 0x55}) &&
+        Matches(0x667CD0, Entry{0x56, 0x8B, 0xF1, 0xE8, 0xB8, 0x26, 0xFB, 0xFF}) &&
+        PatchTaskMethod(ArmedTaskVtable + 10 * sizeof(void*), NativeArmedControl,
+            reinterpret_cast<std::uintptr_t>(&OnArmedControl));
+    Log(cover ? "Installed: pressure-triggered cover movement." : "Skipped: armed cover task or pressure observer differs.");
 }
 
 void InstallCity() noexcept {
@@ -1386,7 +1508,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.10.0");
+    Log("Ultimate Living World 0.11.0");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");

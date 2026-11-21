@@ -499,6 +499,21 @@ std::uint16_t CombatBurstLength(std::uint16_t native, unsigned clip, unsigned fa
     return static_cast<std::uint16_t>(std::max<unsigned>(native, extended));
 }
 
+bool CombatCoverInRange(Point fighter, Point threat) noexcept {
+    const auto distance = DistanceSquared(fighter, threat);
+    return distance >= 5.0f * 5.0f && distance <= 38.0f * 38.0f && std::abs(fighter.z - threat.z) < 3.0f;
+}
+
+bool CombatCoverApproach(Point fighter, Point threat, Point destination) noexcept {
+    const auto travel = DistanceSquared(fighter, destination);
+    const auto advance = (destination.x - fighter.x) * (threat.x - fighter.x) +
+        (destination.y - fighter.y) * (threat.y - fighter.y);
+    const auto threatRange = std::hypot(threat.x - fighter.x, threat.y - fighter.y);
+    return travel >= 1.5f * 1.5f && travel <= 12.0f * 12.0f &&
+        std::abs(destination.z - fighter.z) <= 1.4f && advance <= 1.5f * threatRange &&
+        DistanceSquared(threat, destination) >= 4.0f * 4.0f;
+}
+
 bool CombatPressure::RecordHit(std::uint32_t ped, std::uint32_t hitAt, std::uint32_t now) noexcept {
     if (now - hitAt > 250) {
         return false;
@@ -510,7 +525,7 @@ bool CombatPressure::RecordHit(std::uint32_t ped, std::uint32_t hitAt, std::uint
     }
     const auto interval = previous.repeated ? SuppressionTime : 1450u;
     const bool repeated = samePed && hitAt - previous.at < interval;
-    previous = {ped, hitAt, true, repeated};
+    previous = {ped, hitAt, true, repeated, samePed ? previous.coverSearchAt : std::nullopt};
     return repeated;
 }
 
@@ -519,8 +534,30 @@ bool CombatPressure::Suppressed(std::uint32_t ped, std::uint32_t now) const noex
     return hit.present && hit.ped == ped && hit.repeated && now - hit.at < SuppressionTime;
 }
 
+bool CombatPressure::TakeCoverSearch(std::uint32_t ped, std::uint32_t now, std::uint32_t frame) noexcept {
+    if (!Suppressed(ped, now)) {
+        return false;
+    }
+    auto& hit = m_Hits[(ped >> 8) % m_Hits.size()];
+    if (hit.coverSearchAt && now - *hit.coverSearchAt < 4800) {
+        return false;
+    }
+    if (m_Frame != frame) {
+        m_Frame = frame;
+        m_CoverSearches = 0;
+    }
+    if (m_CoverSearches >= 2) {
+        return false;
+    }
+    ++m_CoverSearches;
+    hit.coverSearchAt = now;
+    return true;
+}
+
 void CombatPressure::Reset() noexcept {
     m_Hits = {};
+    m_Frame = 0;
+    m_CoverSearches = 0;
 }
 
 float PanelWearAtWheel(std::uint32_t panels, int wheel) noexcept {

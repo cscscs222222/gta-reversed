@@ -189,11 +189,14 @@ std::uint8_t CombatAccuracy(std::uint8_t native, unsigned faction, float health,
     float wet, float fog, unsigned hour, bool suppressed = false) noexcept;
 std::uint16_t CombatBurstLength(std::uint16_t native, unsigned clip, unsigned faction, float health,
     bool suppressed) noexcept;
+bool CombatCoverInRange(Point fighter, Point threat) noexcept;
+bool CombatCoverApproach(Point fighter, Point threat, Point destination) noexcept;
 
 class CombatPressure {
 public:
     bool RecordHit(std::uint32_t ped, std::uint32_t hitAt, std::uint32_t now) noexcept;
     bool Suppressed(std::uint32_t ped, std::uint32_t now) const noexcept;
+    bool TakeCoverSearch(std::uint32_t ped, std::uint32_t now, std::uint32_t frame) noexcept;
     void Reset() noexcept;
 
 private:
@@ -202,8 +205,11 @@ private:
         std::uint32_t at{};
         bool present{};
         bool repeated{};
+        std::optional<std::uint32_t> coverSearchAt{};
     };
     std::array<Hit, 256> m_Hits{};
+    std::uint32_t m_Frame{};
+    unsigned m_CoverSearches{};
 };
 
 struct WheelForces {
