@@ -26,6 +26,9 @@ constexpr std::uintptr_t ImageBase = 0x400000;
 constexpr std::uintptr_t ShotDispatchCall = 0x4C39AC;
 constexpr std::uintptr_t NativeShotResponse = 0x4BC710;
 constexpr std::uintptr_t NativeFireResponse = 0x4BBFB0;
+constexpr std::uintptr_t NativeDamageResponse = 0x4C0170;
+constexpr std::uintptr_t NativeGunTask = 0x62A380;
+constexpr std::uintptr_t GunTaskVtable = 0x86D724;
 constexpr std::uintptr_t PedPool = 0xB74490;
 constexpr std::uintptr_t TaskPool = 0xB744A8;
 constexpr std::uintptr_t VehiclePool = 0xB74494;
@@ -44,6 +47,8 @@ constexpr std::uint32_t Walking = 4;
 constexpr std::uint32_t Jogging = 5;
 
 using ShotResponse = void(__thiscall*)(void* handler, const void* shot, void* activeTask, void* simplestTask);
+using DamageResponse = void(__thiscall*)(void*, const void*, void*, void*, void*);
+using GunTask = bool(__thiscall*)(void*, void*);
 using PedReference = int(__cdecl*)(const void* ped);
 using LineClear = bool(__cdecl*)(const ulw::Point&, const ulw::Point&, bool, bool, bool, bool, bool, bool, bool);
 using AllocateTask = void*(__cdecl*)(std::size_t);
@@ -82,6 +87,7 @@ ulw::PoliceSearch s_Police{};
 ulw::RoadblockAttempts s_Roadblocks{};
 ulw::CrashScenes s_Crashes{};
 ulw::CrashWitnesses s_CrashWitnesses{};
+ulw::CombatPressure s_CombatPressure{};
 ulw::RoadPhysics s_RoadPhysics{};
 std::array<ulw::EmergencyUnit, 16> s_EmergencyUnits{};
 struct AirObservation {
@@ -104,6 +110,9 @@ unsigned s_RoadblockAttempts{};
 unsigned s_CrashGlances{};
 unsigned s_CrashReroutes{};
 unsigned s_EmergencyApproaches{};
+unsigned s_ExtendedBursts{};
+unsigned s_ShorterBursts{};
+unsigned s_SuppressionHits{};
 unsigned s_AllocationFailures{};
 std::uint32_t s_LastLogTime{};
 std::uint32_t s_LastGameTime{};
@@ -114,6 +123,7 @@ bool s_UseSightingForRoadblocks{};
 bool s_MissionObserver{};
 bool s_ExecutingScripts{};
 bool s_CrashGlancesEnabled{};
+bool s_PressureObserver{};
 std::uint32_t s_StreetTime{};
 
 template<typename T>
@@ -153,15 +163,16 @@ void LogActivity(std::uint32_t now) noexcept {
         return;
     }
     using ulw::SearchPhase;
-    char message[416]{};
+    char message[512]{};
     std::snprintf(message, sizeof(message),
-        "Look=%u Flee=%u Panic=%u taskPoolFailures=%u pursuitUpdates=%u reportUpdates=%u searchUpdates=%u patrolRoutes=%u airSearches=%u roadblockAttempts=%u limitedSpeedCalls=%u emergencyYieldCalls=%u crashSpeedCalls=%u attractorUses=%u crashGlances=%u crashReroutes=%u emergencyApproaches=%u",
+        "Look=%u Flee=%u Panic=%u taskPoolFailures=%u pursuitUpdates=%u reportUpdates=%u searchUpdates=%u patrolRoutes=%u airSearches=%u roadblockAttempts=%u limitedSpeedCalls=%u emergencyYieldCalls=%u crashSpeedCalls=%u attractorUses=%u crashGlances=%u crashReroutes=%u emergencyApproaches=%u extendedBursts=%u shorterBursts=%u suppressionHits=%u",
         s_Reactions[1], s_Reactions[2], s_Reactions[3], s_AllocationFailures,
         s_SearchStages[static_cast<unsigned>(SearchPhase::Pursue)],
         s_SearchStages[static_cast<unsigned>(SearchPhase::Respond)],
         s_SearchStages[static_cast<unsigned>(SearchPhase::Search)],
         s_PatrolRoutes, s_AirSearches, s_RoadblockAttempts, s_RestrictedDrivers, s_YieldingDrivers, s_CrashSlowdowns,
-        s_AttractorUses, s_CrashGlances, s_CrashReroutes, s_EmergencyApproaches);
+        s_AttractorUses, s_CrashGlances, s_CrashReroutes, s_EmergencyApproaches,
+        s_ExtendedBursts, s_ShorterBursts, s_SuppressionHits);
     Log(message);
     s_LastLogTime = now;
 }
@@ -235,6 +246,7 @@ void ClearStreetMemory() noexcept {
     s_RoadPhysics.Reset();
     s_Crashes.Reset();
     s_CrashWitnesses.Reset();
+    s_CombatPressure.Reset();
     s_EmergencyUnits = {};
 }
 
@@ -477,27 +489,100 @@ bool __fastcall OnChatPartner(void* task, void*, void* ped) noexcept {
     return GameFunction<FindChatPartner>(0x66FDA0)(task, ped);
 }
 
+bool IsPlayerPed(const void* entity) noexcept {
+    return entity && (Read<std::uint8_t>(entity, 0x36) & 7) == 3 && Read<std::uint32_t>(entity, 0x598) == 0;
+}
+
+unsigned StreetFighterFaction(const void* ped) noexcept {
+    const auto faction = Read<std::uint32_t>(ped, 0x598);
+    if (faction < 6 || faction > 16 || Read<std::uint8_t>(ped, 0x2F) != 0 ||
+        (Read<std::uint8_t>(ped, 0x46D) & 0x07) || !(Read<float>(ped, 0x540) > 0.0f)) {
+        return 0;
+    }
+    // The engine marks free-roam territory attack waves as mission peds.
+    const bool attackWave = faction >= 7 && (Read<std::uint8_t>(ped, 0x475) & 0x10);
+    return (attackWave || Read<std::uint8_t>(ped, 0x484) == 1) ? faction : 0;
+}
+
+bool IsSuppressed(const void* ped, std::uint32_t now) noexcept {
+    if (!s_PressureObserver || !GameValue<void*>(PedPool)) {
+        return false;
+    }
+    const auto ref = GameFunction<PedReference>(0x54FF60)(ped);
+    return ref >= 0 && !(ref & 0x80) && s_CombatPressure.Suppressed(static_cast<std::uint32_t>(ref), now);
+}
+
+void __fastcall OnDamageResponse(void* handler, void*, const void* event, void* active,
+    void* simplest, void* aborted) noexcept {
+    const auto* const victim = Read<const void*>(handler);
+    const auto weapon = Read<std::uint32_t>(event, 0x1C);
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    // Only damage already calculated by the game counts as a hit.
+    if (weapon >= 22 && weapon <= 34 && IsPlayerPed(Read<const void*>(event, 0x14)) &&
+        Read<bool>(event, 0x42) && (Read<float>(event, 0x38) > 0 || Read<float>(event, 0x3C) > 0) &&
+        StreetFighterFaction(victim) && StreetActive(now) && GameValue<void*>(PedPool)) {
+        const auto ref = GameFunction<PedReference>(0x54FF60)(victim);
+        if (ref >= 0 && !(ref & 0x80) &&
+            s_CombatPressure.RecordHit(static_cast<std::uint32_t>(ref), Read<std::uint32_t>(event, 0x18), now)) {
+            ++s_SuppressionHits;
+        }
+    }
+    GameFunction<DamageResponse>(NativeDamageResponse)(handler, event, active, simplest, aborted);
+}
+
+bool __fastcall OnGunTask(void* task, void*, void* ped) noexcept {
+    const auto process = GameFunction<GunTask>(NativeGunTask);
+    constexpr std::uint8_t FireBurst = 3;
+    if (Read<std::uint8_t>(task, 0x0F) != FireBurst || !IsPlayerPed(Read<const void*>(task, 0x1C))) {
+        return process(task, ped);
+    }
+    const auto faction = StreetFighterFaction(ped);
+    const auto slot = Read<std::uint8_t>(ped, 0x718);
+    // SMGs and assault rifles occupy engine weapon slots 4 and 5.
+    if (!faction || (slot != 4 && slot != 5)) {
+        return process(task, ped);
+    }
+    const auto* const weapon = static_cast<const std::byte*>(ped) + 0x5A0 + slot * 0x1C;
+    const auto type = Read<std::uint32_t>(weapon);
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    if (type < 28 || type > 32 || !StreetActive(now)) {
+        return process(task, ped);
+    }
+    auto& burstLength = *reinterpret_cast<std::uint16_t*>(static_cast<std::byte*>(task) + 0x34);
+    const auto native = burstLength;
+    const auto adjusted = ulw::CombatBurstLength(native, Read<unsigned>(weapon, 0x08), faction,
+        Read<float>(ped, 0x540), IsSuppressed(ped, now));
+    if (native == adjusted) {
+        return process(task, ped);
+    }
+    const auto remaining = Read<std::uint16_t>(task, 0x36);
+    const auto previousCommand = Read<std::uint8_t>(task, 0x10);
+    // The engine reads this request when it starts a burst. Its remaining
+    // shot count, reloads and animations stay under native control.
+    burstLength = adjusted;
+    const auto finished = process(task, ped);
+    burstLength = native;
+    if (!finished && Read<std::uint8_t>(task, 0x10) == FireBurst &&
+        Read<std::uint16_t>(task, 0x36) == adjusted && (remaining != adjusted || previousCommand != FireBurst)) {
+        ++(adjusted > native ? s_ExtendedBursts : s_ShorterBursts);
+    }
+    return finished;
+}
+
 bool __fastcall OnWeaponFire(void* weapon, void*, void* ped, const void* start, const void* muzzle,
     const void* target, const void* aim, const void* alternate) noexcept {
     const auto fire = GameFunction<FireWeapon>(0x742300);
     const auto weaponType = Read<std::uint32_t>(weapon);
-    if (!target || (Read<std::uint8_t>(target, 0x36) & 7) != 3 || Read<std::uint32_t>(target, 0x598) != 0 ||
-        weaponType < 22 || weaponType > 34 || !StreetActive(GameValue<std::uint32_t>(0xB7CB84))) {
-        return fire(weapon, ped, start, muzzle, target, aim, alternate);
-    }
-    const auto faction = Read<std::uint32_t>(ped, 0x598);
-    // The engine marks free-roam territory attack waves as mission peds.
-    const bool attackWave = faction >= 7 && faction <= 16 && (Read<std::uint8_t>(ped, 0x475) & 0x10);
-    if ((!attackWave && Read<std::uint8_t>(ped, 0x484) != 1) ||
-        Read<std::uint8_t>(ped, 0x2F) != 0 || (Read<std::uint8_t>(ped, 0x46D) & 0x07) ||
-        faction < 6 || faction > 16) {
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    const auto faction = StreetFighterFaction(ped);
+    if (!faction || !IsPlayerPed(target) || weaponType < 22 || weaponType > 34 || !StreetActive(now)) {
         return fire(weapon, ped, start, muzzle, target, aim, alternate);
     }
     auto& accuracy = *(static_cast<std::uint8_t*>(ped) + 0x71A);
     const auto native = accuracy;
     accuracy = ulw::CombatAccuracy(native, faction, Read<float>(ped, 0x540),
         ulw::DistanceSquared(EntityPosition(ped), EntityPosition(target)),
-        GameValue<float>(0xC81308), Fog(), GameValue<std::uint8_t>(0xB70153));
+        GameValue<float>(0xC81308), Fog(), GameValue<std::uint8_t>(0xB70153), IsSuppressed(ped, now));
     const auto fired = fire(weapon, ped, start, muzzle, target, aim, alternate);
     accuracy = native;
     return fired;
@@ -1235,10 +1320,20 @@ bool InstallMotorcyclePhysics() noexcept {
         PatchCalls({0x6BAF3D, 0x6BB4C1, 0x6BB855}, 0x6D73B0, reinterpret_cast<std::uintptr_t>(&OnBikeWheel));
 }
 
-bool InstallCombat() noexcept {
-    return Matches(0x742300, Entry{0x83, 0xEC, 0x3C, 0x53, 0x56, 0x57, 0x8B, 0xF1}) &&
+void InstallCombat() noexcept {
+    const bool aiming = Matches(0x742300, Entry{0x83, 0xEC, 0x3C, 0x53, 0x56, 0x57, 0x8B, 0xF1}) &&
         Matches(0x73FBFD, std::array<std::uint8_t, 7>{0x0F, 0xB6, 0x97, 0x1A, 0x07, 0, 0}) &&
         PatchCalls({0x61ECCD}, 0x742300, reinterpret_cast<std::uintptr_t>(&OnWeaponFire));
+    Log(aiming ? "Installed: police and gang aiming profiles." : "Skipped: weapon function differs.");
+    const bool bursts = Matches(NativeGunTask, Entry{0x6A, 0xFF, 0x64, 0xA1, 0, 0, 0, 0}) &&
+        Matches(0x62AB2B, Entry{0x66, 0x8B, 0x4E, 0x34, 0x66, 0x89, 0x4E, 0x36}) &&
+        PatchTaskMethod(GunTaskVtable + 7 * sizeof(void*), NativeGunTask,
+            reinterpret_cast<std::uintptr_t>(&OnGunTask));
+    Log(bursts ? "Installed: police and gang automatic bursts." : "Skipped: gun task differs.");
+    s_PressureObserver = (aiming || bursts) && PedQueriesMatch() &&
+        Matches(NativeDamageResponse, Entry{0x64, 0xA1, 0, 0, 0, 0, 0x6A, 0xFF}) &&
+        PatchCalls({0x4C3961}, NativeDamageResponse, reinterpret_cast<std::uintptr_t>(&OnDamageResponse));
+    Log(s_PressureObserver ? "Installed: gunfire suppression from player hits." : "Skipped: damage dispatcher differs.");
 }
 
 void InstallCity() noexcept {
@@ -1291,7 +1386,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.9.0");
+    Log("Ultimate Living World 0.10.0");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");
@@ -1329,7 +1424,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log(InstallMotorcyclePhysics() ? "Installed: motorcycle grip and heat." : "Skipped: motorcycle wheel call sites differ.");
     }
     if (GetPrivateProfileIntW(L"Modules", L"Combat", 1, config.c_str())) {
-        Log(InstallCombat() ? "Installed: police and gang aiming profiles." : "Skipped: weapon function differs.");
+        InstallCombat();
     }
     bool streetPedestrians{};
     if (GetPrivateProfileIntW(L"Modules", L"City", 1, config.c_str())) {

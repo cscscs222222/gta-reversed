@@ -186,7 +186,25 @@ CityActivity AmbientActivity(unsigned hour, unsigned weekday, unsigned region, f
 unsigned AttractorUsePercent(unsigned type, unsigned hour, unsigned weekday, unsigned region, float rain) noexcept;
 
 std::uint8_t CombatAccuracy(std::uint8_t native, unsigned faction, float health, float distanceSquared,
-    float wet, float fog, unsigned hour) noexcept;
+    float wet, float fog, unsigned hour, bool suppressed = false) noexcept;
+std::uint16_t CombatBurstLength(std::uint16_t native, unsigned clip, unsigned faction, float health,
+    bool suppressed) noexcept;
+
+class CombatPressure {
+public:
+    bool RecordHit(std::uint32_t ped, std::uint32_t hitAt, std::uint32_t now) noexcept;
+    bool Suppressed(std::uint32_t ped, std::uint32_t now) const noexcept;
+    void Reset() noexcept;
+
+private:
+    struct Hit {
+        std::uint32_t ped{};
+        std::uint32_t at{};
+        bool present{};
+        bool repeated{};
+    };
+    std::array<Hit, 256> m_Hits{};
+};
 
 struct WheelForces {
     float thrust;

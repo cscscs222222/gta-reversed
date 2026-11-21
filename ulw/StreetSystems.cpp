@@ -7,6 +7,7 @@ namespace ulw {
 namespace {
 
 constexpr std::uint32_t CrashLifetime = 8000;
+constexpr std::uint32_t SuppressionTime = 2400;
 
 float Unit(float value) noexcept {
     return std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : 0.0f;
@@ -467,7 +468,7 @@ unsigned AttractorUsePercent(unsigned type, unsigned hour, unsigned weekday, uns
 }
 
 std::uint8_t CombatAccuracy(std::uint8_t native, unsigned faction, float health, float distanceSquared,
-    float wet, float fog, unsigned hour) noexcept {
+    float wet, float fog, unsigned hour, bool suppressed) noexcept {
     if (native == 0 || native > 100 || faction < 6 || faction > 16 || !(health > 0.0f) ||
         !std::isfinite(distanceSquared) || distanceSquared < 0.0f) {
         return native;
@@ -477,8 +478,49 @@ std::uint8_t CombatAccuracy(std::uint8_t native, unsigned faction, float health,
     const auto distant = Unit((std::sqrt(distanceSquared) - 8.0f) / 37.0f);
     const auto injured = Unit((65.0f - health) / 55.0f);
     const auto weather = Unit(wet) * 6.0f + Unit(fog) * 17.0f + (IsNight(hour) ? 5.0f : 0.0f);
-    const auto adjustment = training[faction - 6] * (1.0f - 0.45f * distant) - injured * 18.0f - distant * weather;
+    const auto penalty = suppressed ? 14.0f : 0.0f;
+    const auto adjustment = training[faction - 6] * (1.0f - 0.45f * distant) -
+        injured * 18.0f - distant * weather - penalty;
     return static_cast<std::uint8_t>(std::clamp(static_cast<float>(native) + adjustment, 1.0f, 100.0f));
+}
+
+std::uint16_t CombatBurstLength(std::uint16_t native, unsigned clip, unsigned faction, float health,
+    bool suppressed) noexcept {
+    if (native == 0 || native > 12 || clip == 0 || faction < 6 || faction > 16 ||
+        !std::isfinite(health) || health <= 0.0f) {
+        return native;
+    }
+    if (suppressed || health < 35.0f) {
+        return static_cast<std::uint16_t>(std::min((native + 1u) / 2u, clip));
+    }
+    const auto maximum = faction == 6 ? 12u : 10u;
+    const auto extra = faction == 6 ? std::max(2u, native / 2u) : 1u + native / 4u;
+    const auto extended = std::min({native + extra, maximum, clip});
+    return static_cast<std::uint16_t>(std::max<unsigned>(native, extended));
+}
+
+bool CombatPressure::RecordHit(std::uint32_t ped, std::uint32_t hitAt, std::uint32_t now) noexcept {
+    if (now - hitAt > 250) {
+        return false;
+    }
+    auto& previous = m_Hits[(ped >> 8) % m_Hits.size()];
+    const bool samePed = previous.present && previous.ped == ped;
+    if (samePed && previous.at >= hitAt) {
+        return false;
+    }
+    const auto interval = previous.repeated ? SuppressionTime : 1450u;
+    const bool repeated = samePed && hitAt - previous.at < interval;
+    previous = {ped, hitAt, true, repeated};
+    return repeated;
+}
+
+bool CombatPressure::Suppressed(std::uint32_t ped, std::uint32_t now) const noexcept {
+    const auto& hit = m_Hits[(ped >> 8) % m_Hits.size()];
+    return hit.present && hit.ped == ped && hit.repeated && now - hit.at < SuppressionTime;
+}
+
+void CombatPressure::Reset() noexcept {
+    m_Hits = {};
 }
 
 float PanelWearAtWheel(std::uint32_t panels, int wheel) noexcept {

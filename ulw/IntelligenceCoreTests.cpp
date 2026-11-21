@@ -329,6 +329,41 @@ void TestCombat() {
     Check(ulw::CombatAccuracy(100, 6, 100, 36, 0, 0, 12) == 100, "combat accuracy must not exceed 100");
     Check(ulw::CombatAccuracy(60, 4, 100, 36, 0, 0, 12) == 60, "civilian accuracy must remain native");
     Check(ulw::CombatAccuracy(0, 7, 100, 36, 0, 0, 12) == 0, "intentional misses must remain native");
+    Check(ulw::CombatAccuracy(60, 6, 100, 36, 0, 0, 12, true) < closeCop,
+        "repeated player hits should temporarily weaken aim");
+
+    Check(ulw::CombatBurstLength(4, 30, 6, 100, false) == 6 &&
+        ulw::CombatBurstLength(3, 30, 7, 100, false) == 4, "healthy fighters should extend automatic bursts");
+    Check(ulw::CombatBurstLength(3, 4, 6, 100, false) == 4 &&
+        ulw::CombatBurstLength(4, 2, 6, 100, false) == 4, "added rounds must fit the current clip");
+    Check(ulw::CombatBurstLength(11, 30, 6, 100, false) == 12 &&
+        ulw::CombatBurstLength(9, 30, 16, 100, false) == 10, "burst extensions should respect faction caps");
+    Check(ulw::CombatBurstLength(5, 30, 6, 100, true) == 3 &&
+        ulw::CombatBurstLength(5, 2, 7, 25, false) == 2, "pressure and serious injuries should shorten bursts");
+    Check(ulw::CombatBurstLength(0, 30, 6, 100, false) == 0 &&
+        ulw::CombatBurstLength(13, 30, 6, 100, true) == 13 &&
+        ulw::CombatBurstLength(4, 0, 6, 100, true) == 4 &&
+        ulw::CombatBurstLength(4, 30, 5, 100, false) == 4,
+        "native reloads, special bursts and outside factions must be preserved");
+
+    ulw::CombatPressure pressure;
+    constexpr std::uint32_t officer = 0xA01;
+    constexpr std::uint32_t replacement = 0xA02;
+    Check(!pressure.RecordHit(officer, 1000, 1004) && !pressure.RecordHit(officer, 1000, 1010) &&
+        !pressure.Suppressed(officer, 1010), "a hit and its duplicate must not start suppression");
+    Check(pressure.RecordHit(officer, 2000, 2005) && pressure.Suppressed(officer, 2005) &&
+        !pressure.Suppressed(replacement, 2005), "consecutive hits should suppress only the matching ped generation");
+    Check(!pressure.RecordHit(officer, 1999, 2005) && !pressure.RecordHit(officer, 2250, 2501),
+        "out-of-order and delayed events must not renew suppression");
+    Check(pressure.RecordHit(officer, 3840, 3850) && pressure.Suppressed(officer, 6239) &&
+        !pressure.Suppressed(officer, 6240), "a recent hit may renew suppression, which must expire on time");
+    Check(!pressure.RecordHit(officer, 6800, 6801) && pressure.RecordHit(officer, 7600, 7601),
+        "a late hit should start a fresh sequence");
+    Check(!pressure.RecordHit(replacement, 7700, 7700) && !pressure.Suppressed(officer, 7700) &&
+        !pressure.Suppressed(replacement, 7700), "reusing the game slot must start with an empty history");
+    Check(pressure.RecordHit(replacement, 7800, 7800), "the replacement should accumulate its own hits");
+    pressure.Reset();
+    Check(!pressure.Suppressed(replacement, 7801), "leaving street mode must discard hit history");
 }
 
 void TestVehicleDamageAndCooling() {
@@ -494,7 +529,7 @@ int wmain(int argc, wchar_t** argv) {
         TestMissionProtection();
         std::puts("Campaign: native and script mission signals, special profiles, cleanup, and reset passed.");
         TestCombat();
-        std::puts("Combat: aiming profiles, injury, weather and native accuracy limits passed.");
+        std::puts("Combat: aiming profiles, burst limits, timed suppression and ped slot reuse passed.");
         TestCityActivity();
         std::puts("City: rush hour, regional nightlife and weather schedules passed.");
         if (argc == 2) {
