@@ -41,6 +41,30 @@ private:
     unsigned m_ProbeCount{};
 };
 
+struct FootInspection {
+    std::uintptr_t parent{}, child{};
+    Point scene{};
+    std::uint32_t started{};
+    bool looking{};
+};
+
+class FootPatrols {
+public:
+    bool CanInspect(std::uint32_t officer, Point origin, const IncidentLead& lead, std::uint32_t now) const noexcept;
+    void Assign(std::uint32_t officer, FootInspection inspection) noexcept;
+    std::optional<FootInspection> Current(std::uint32_t officer, std::uintptr_t parent, std::uintptr_t child) const noexcept;
+    void Clear(std::uint32_t officer) noexcept;
+    void Reset() noexcept;
+
+private:
+    struct Patrol {
+        std::uint32_t officer{};
+        FootInspection inspection{};
+        std::optional<std::uint32_t> assignedAt{};
+    };
+    std::array<Patrol, 48> m_Patrols{};
+};
+
 unsigned DrivingEvidence(float speedSquared, bool severeCollision) noexcept;
 
 class DrivingSuspicion {

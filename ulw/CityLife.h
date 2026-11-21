@@ -12,6 +12,8 @@ bool IsCityVenue(unsigned effectType) noexcept;
 std::optional<CityVenue> PreferredVenue(std::uint16_t seed, unsigned hour, unsigned weekday,
     unsigned region, float rain) noexcept;
 CrashReaction ReactToStreetCrash(std::uint16_t seed, float distanceSquared) noexcept;
+int RetailPrice(int nativePrice, unsigned region, unsigned section) noexcept;
+int RepairPrice(unsigned region) noexcept;
 
 struct VenueObservation {
     Point owner;

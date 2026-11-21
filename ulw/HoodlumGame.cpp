@@ -56,6 +56,17 @@ constexpr std::uintptr_t ScriptPool = 0xA8B430;
 constexpr std::size_t ScriptSlotSize = 0xE0;
 constexpr std::size_t ScriptCount = 96;
 constexpr std::uintptr_t StandardWanderVtable = 0x85A200;
+constexpr std::uintptr_t CopWanderVtable = 0x859C80;
+constexpr std::uintptr_t NativeCopControl = 0x674D80;
+constexpr std::uintptr_t NativeCopNext = 0x674860;
+constexpr std::uintptr_t NativeCopFirst = 0x674750;
+constexpr std::uintptr_t NativeShopPrice = 0x49AD50;
+constexpr std::uintptr_t NativeGarageUpdate = 0x44AA50;
+constexpr std::uintptr_t NativeGarageMessage = 0x447B80;
+constexpr std::uintptr_t NativeText = 0x6A0050;
+constexpr std::uintptr_t RepairAffordability = 0x44AC94;
+constexpr std::uintptr_t RepairDeduction = 0x44B328;
+constexpr std::uintptr_t RepairStatistics = 0x44B336;
 constexpr std::uintptr_t NativeWanderNext = 0x674140;
 constexpr std::uintptr_t NativeWanderFirst = 0x6740E0;
 constexpr std::uintptr_t WalkPointVtable = 0x86FD50;
@@ -92,6 +103,7 @@ using ReserveCover = void*(__cdecl*)(void*, const ulw::Point&, bool);
 using CoverCoordinates = bool(__cdecl*)(const void*, void*, const ulw::Point&, ulw::Point&);
 using ReleaseCover = void(__thiscall*)(void*, void*);
 using RunToPoint = void*(__thiscall*)(void*, unsigned, const ulw::Point&, float, bool, bool);
+using GoToAndWait = void*(__thiscall*)(void*, unsigned, const ulw::Point&, float, float, bool, bool);
 using StandStill = void*(__thiscall*)(void*, int, bool, bool, float);
 using ReleasePedCover = void(__thiscall*)(void*);
 using AllocateTask = void*(__cdecl*)(std::size_t);
@@ -117,6 +129,10 @@ using ChaseNode = bool(__cdecl*)(void*, float, float, float, const void*);
 using BlockSteering = void(__cdecl*)(void*, const void*, float, float, float, float, float*, float*, float*, bool*);
 using PopulationUpdate = void(__cdecl*)(bool);
 using RandomCars = void(__cdecl*)();
+using ShopPrice = int(__cdecl*)(std::uint32_t);
+using GarageUpdate = void(__thiscall*)(void*, int);
+using GarageMessage = void(__cdecl*)(const char*, std::int16_t, std::uint16_t, std::int16_t);
+using TextLookup = const char*(__thiscall*)(void*, const char*);
 using ProcessScripts = void(__cdecl*)();
 using AddAttractorPed = bool(__cdecl*)(int, const void*, ulw::Point, void*, int);
 using NearbyEntities = void(__cdecl*)(const ulw::Point&, float, bool, std::int16_t*, std::int16_t,
@@ -152,6 +168,7 @@ ulw::MissionState s_Missions{};
 ulw::PoliceSearch s_Police{};
 ulw::PatrolTeam s_PatrolTeam{};
 ulw::PoliceIncidents s_PoliceIncidents{};
+ulw::FootPatrols s_FootPatrols{};
 ulw::DrivingSuspicion s_DrivingSuspicion{};
 ulw::SurrenderInput s_Surrender{};
 struct SurrenderApproach {
@@ -241,6 +258,12 @@ unsigned s_RoadsideExits{};
 unsigned s_PoliceReports{};
 unsigned s_SuspicionWarnings{};
 unsigned s_InvestigationRoutes{};
+unsigned s_FootInspections{};
+unsigned s_FootArrivals{};
+unsigned s_RegionalPrices{};
+unsigned s_RepairPriceChanges{};
+int s_RepairPrice = 100;
+int s_RepairMessagePrice = 100;
 unsigned s_VoluntaryArrests{};
 unsigned s_CityVisits{};
 unsigned s_CrashWaits{};
@@ -270,6 +293,7 @@ bool s_RoadsideEnabled{};
 bool s_RoadsideExit{};
 bool s_PoliceWitnesses{};
 bool s_PoliceCruise{};
+bool s_FootInspectionsEnabled{};
 bool s_PoliceHud{};
 bool s_CivilianShots{};
 bool s_CityTasks{};
@@ -337,6 +361,9 @@ void LogActivity(std::uint32_t now) noexcept {
     Log(message);
     std::snprintf(message, sizeof(message), "policeReports=%u drivingWarnings=%u investigationRoutes=%u voluntaryArrests=%u",
         s_PoliceReports, s_SuspicionWarnings, s_InvestigationRoutes, s_VoluntaryArrests);
+    Log(message);
+    std::snprintf(message, sizeof(message), "footInspections=%u footArrivals=%u regionalPriceQueries=%u repairPriceChanges=%u",
+        s_FootInspections, s_FootArrivals, s_RegionalPrices, s_RepairPriceChanges);
     Log(message);
     std::snprintf(message, sizeof(message), "scheduledVisits=%u crashWaits=%u crashDepartures=%u crashCalls=%u",
         s_CityVisits, s_CrashWaits, s_CrashDepartures, s_CrashCalls);
@@ -423,6 +450,7 @@ void ClearStreetMemory() noexcept {
     s_Police.Reset();
     s_PatrolTeam.Reset();
     s_PoliceIncidents.Reset();
+    s_FootPatrols.Reset();
     s_DrivingSuspicion.Reset();
     s_Surrender.Reset();
     s_SurrenderApproach = {};
@@ -527,6 +555,89 @@ void __cdecl OnProcessScripts() noexcept {
     if (changed && s_Diagnostics) {
         LogMissionState();
     }
+}
+
+bool CommerceAvailable() noexcept {
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    auto mission = NativeMissionState(now);
+    if (!mission.scriptReady || mission.missionFlag || mission.cutscene || mission.activity ||
+        (s_MissionObserver && !s_Missions.AllowsWorld())) {
+        return false;
+    }
+    if (s_ExecutingScripts || !s_MissionObserver) {
+        InspectMissionThread(mission);
+    }
+    return !mission.missionThread;
+}
+
+int __cdecl OnShopPrice(std::uint32_t key) noexcept {
+    const auto native = GameFunction<ShopPrice>(NativeShopPrice)(key);
+    const auto adjusted = CommerceAvailable()
+        ? ulw::RetailPrice(native, GameValue<unsigned>(0xBA6718), GameValue<unsigned>(0xA9A7C8)) : native;
+    s_RegionalPrices += adjusted != native ? 1u : 0u;
+    return adjusted;
+}
+
+bool SetRepairPrice(int price) noexcept {
+    if (price == s_RepairPrice) {
+        return true;
+    }
+    if (GameValue<std::uint8_t>(RepairAffordability) != static_cast<std::uint8_t>(s_RepairPrice) ||
+        GameValue<std::uint8_t>(RepairDeduction) != static_cast<std::uint8_t>(-s_RepairPrice) ||
+        GameValue<float>(RepairStatistics) != static_cast<float>(s_RepairPrice)) {
+        return false;
+    }
+    constexpr auto span = RepairStatistics - RepairAffordability + sizeof(float);
+    auto* const block = reinterpret_cast<void*>(RepairAffordability);
+    DWORD protection{};
+    if (!VirtualProtect(block, span, PAGE_EXECUTE_READWRITE, &protection)) {
+        return false;
+    }
+    const auto cost = static_cast<std::uint8_t>(price);
+    const auto deduction = static_cast<std::uint8_t>(-price);
+    const auto statistic = static_cast<float>(price);
+    std::memcpy(block, &cost, sizeof(cost));
+    std::memcpy(reinterpret_cast<void*>(RepairDeduction), &deduction, sizeof(deduction));
+    std::memcpy(reinterpret_cast<void*>(RepairStatistics), &statistic, sizeof(statistic));
+    FlushInstructionCache(GetCurrentProcess(), block, span);
+    DWORD previous{};
+    if (!VirtualProtect(block, span, protection, &previous)) {
+        Log("Windows did not restore the garage code page protection.");
+    }
+    s_RepairPrice = price;
+    ++s_RepairPriceChanges;
+    return true;
+}
+
+void __fastcall OnGarageUpdate(void* garage, void*, int id) noexcept {
+    if (Read<std::uint8_t>(garage, 0x4C) == 5) {
+        SetRepairPrice(CommerceAvailable() ? ulw::RepairPrice(GameValue<unsigned>(0xBA6718)) : 100);
+    }
+    GameFunction<GarageUpdate>(NativeGarageUpdate)(garage, id);
+}
+
+bool RepairMessage(const char* key) noexcept {
+    return key && (!std::strcmp(key, "GA_2") || !std::strcmp(key, "GA_3") || !std::strcmp(key, "GA_XX"));
+}
+
+void __cdecl OnGarageMessage(const char* key, std::int16_t number, std::uint16_t duration, std::int16_t second) noexcept {
+    s_RepairMessagePrice = RepairMessage(key) ? s_RepairPrice : 100;
+    GameFunction<GarageMessage>(NativeGarageMessage)(key, number, duration, second);
+}
+
+const char* __fastcall OnGarageText(void* text, void*, const char* key) noexcept {
+    const auto* const native = GameFunction<TextLookup>(NativeText)(text, key);
+    if (!native || s_RepairMessagePrice == 100 || !RepairMessage(key)) {
+        return native;
+    }
+    const auto* const mark = std::strstr(native, "$100");
+    if (!mark) {
+        return native;
+    }
+    static std::array<char, 512> adjusted{};
+    const auto length = std::snprintf(adjusted.data(), adjusted.size(), "%.*s$%d%s",
+        static_cast<int>(mark - native), native, s_RepairMessagePrice, mark + 4);
+    return length >= 0 && static_cast<std::size_t>(length) < adjusted.size() ? adjusted.data() : native;
 }
 
 float Fog() noexcept {
@@ -1279,6 +1390,126 @@ bool WitnessStillPresent(const ulw::IncidentLead& lead) noexcept {
     }
     const auto* const witness = GameFunction<PedFromReference>(0x54FF90)(static_cast<int>(lead.observer));
     return witness && Read<float>(witness, 0x540) > 0.0f;
+}
+
+int FootOfficer(const void* task, const void* ped) noexcept {
+    if (!s_FootInspectionsEnabled || !ped || !GameValue<void*>(PedPool) || !GameValue<void*>(TaskPool) ||
+        Read<std::uint32_t>(ped, 0x598) != 6 || Read<std::uint8_t>(ped, 0x79C) ||
+        !PedOnFoot(ped) || Read<const void*>(task, 0x04) || Read<const void*>(task, 0x28)) {
+        return -1;
+    }
+    const auto ref = GameFunction<PedReference>(0x54FF60)(ped);
+    return ref >= 0 && !(ref & 0x80) ? ref : -1;
+}
+
+void* WatchIncident(void* ped, ulw::Point incident) noexcept {
+    auto* const memory = GameFunction<AllocateTask>(0x61A5A0)(0x20);
+    if (!memory) {
+        ++s_AllocationFailures;
+        return nullptr;
+    }
+    const auto position = EntityPosition(ped);
+    const auto heading = std::atan2(position.x - incident.x, incident.y - position.y);
+    GameFunction<PedLookHeading>(0x5DEDC0)(ped, heading, false, false);
+    GameFunction<PedLookTimer>(0x5DF8D0)(ped, 1250);
+    return GameFunction<StandStill>(0x62F310)(memory, 1250, false, false, 8.0f);
+}
+
+void* __fastcall OnPatrolFootControl(void* task, void*, void* cop) noexcept {
+    const auto native = GameFunction<WanderControl>(NativeCopControl);
+    auto* const child = Read<void*>(task, 0x08);
+    const auto ref = FootOfficer(task, cop);
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    if (ref < 0 || !child || !StreetActive(now) || CurrentWantedLevel() != 0) {
+        return native(task, cop);
+    }
+    const auto officer = static_cast<std::uint32_t>(ref);
+    const auto parent = reinterpret_cast<std::uintptr_t>(task);
+    const auto current = s_FootPatrols.Current(officer, parent, reinterpret_cast<std::uintptr_t>(child));
+    const auto abort = GameFunction<AbortTask>(Read<std::uintptr_t>(Read<const void*>(child), 0x18));
+    if (current) {
+        if (now - current->started <= (current->looking ? 2200u : 9000u) || !abort(child, cop, 1, nullptr)) {
+            return child;
+        }
+        s_FootPatrols.Clear(officer);
+        return GameFunction<WanderControl>(NativeCopFirst)(task, cop);
+    }
+    auto* const next = native(task, cop);
+    if (next != child || Read<std::uintptr_t>(child) != WalkPointVtable ||
+        !s_PoliceIncidents.TakeProbe(officer, now, GameValue<std::uint32_t>(0xB7CB4C))) {
+        return next;
+    }
+    const auto origin = EntityPosition(cop);
+    const auto crash = s_Crashes.Closest(origin, 22.0f, now);
+    if (crash && VisibleStreetPoint(cop, origin, crash->position, 22.0f, false) &&
+        s_PoliceIncidents.Record(ulw::IncidentKind::Crash, officer, crash->position, now, false)) {
+        ++s_PoliceReports;
+    }
+    const auto lead = s_PoliceIncidents.Nearby(origin, now, false);
+    if (!lead || !WitnessStillPresent(*lead) || !s_FootPatrols.CanInspect(officer, origin, *lead, now)) {
+        return next;
+    }
+    const auto& scene = lead->point;
+    const auto distance = std::hypot(scene.x - origin.x, scene.y - origin.y);
+    const bool close = distance <= 5.0f;
+    auto destination = origin;
+    if (!close) {
+        const auto progress = 1.0f - 3.4f / distance;
+        destination = {origin.x + (scene.x - origin.x) * progress, origin.y + (scene.y - origin.y) * progress, origin.z};
+        if (!WalkableCombatRoute(origin, destination)) {
+            return next;
+        }
+    } else if (!CityPathVisible(origin, scene)) {
+        return next;
+    }
+    if (!abort(child, cop, 1, nullptr)) {
+        return next;
+    }
+    void* inspect{};
+    if (close) {
+        inspect = WatchIncident(cop, scene);
+    } else if (auto* const memory = GameFunction<AllocateTask>(0x61A5A0)(0x28)) {
+        inspect = GameFunction<GoToAndWait>(0x668120)(memory, Jogging, destination, 0.65f, 1.5f, false, true);
+    } else {
+        ++s_AllocationFailures;
+    }
+    if (!inspect) {
+        return next;
+    }
+    s_FootPatrols.Assign(officer, {parent, reinterpret_cast<std::uintptr_t>(inspect), scene, now, close});
+    ++s_FootInspections;
+    s_FootArrivals += close ? 1u : 0u;
+    LogActivity(now);
+    return inspect;
+}
+
+void* __fastcall OnPatrolFootNext(void* task, void*, void* cop) noexcept {
+    const auto ref = FootOfficer(task, cop);
+    if (ref < 0) {
+        return GameFunction<WanderControl>(NativeCopNext)(task, cop);
+    }
+    const auto officer = static_cast<std::uint32_t>(ref);
+    const auto parent = reinterpret_cast<std::uintptr_t>(task);
+    const auto current = s_FootPatrols.Current(officer, parent, Read<std::uintptr_t>(task, 0x08));
+    if (!current) {
+        return GameFunction<WanderControl>(NativeCopNext)(task, cop);
+    }
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    if (!current->looking && StreetActive(now) && CurrentWantedLevel() == 0 &&
+        ulw::DistanceSquared(EntityPosition(cop), current->scene) <= 7.0f * 7.0f) {
+        if (auto* const watch = WatchIncident(cop, current->scene)) {
+            s_FootPatrols.Assign(officer, {parent, reinterpret_cast<std::uintptr_t>(watch), current->scene, now, true});
+            ++s_FootArrivals;
+            LogActivity(now);
+            return watch;
+        }
+    }
+    s_FootPatrols.Clear(officer);
+    constexpr std::uint16_t invalid = 0xFFFF;
+    auto* const fields = static_cast<std::byte*>(task);
+    std::memcpy(fields + 0x18, &invalid, sizeof(invalid));
+    std::memcpy(fields + 0x1C, &invalid, sizeof(invalid));
+    return GameFunction<WanderControl>(NativeCopFirst)(task, cop);
 }
 
 bool CanSubmit(const void* player) noexcept {
@@ -2878,6 +3109,11 @@ bool PedQueriesMatch() noexcept {
         Matches(0x56A490, Entry{0x83, 0xEC, 0x5C, 0x66, 0x81, 0x3D, 0x78, 0xCD});
 }
 
+bool PedLookMatches() noexcept {
+    return Matches(0x5DEDC0, Entry{0x56, 0x8B, 0xF1, 0x8B, 0x86, 0x48, 0x07, 0x00}) &&
+        Matches(0x5DF8D0, Entry{0xA1, 0x84, 0xCB, 0xB7, 0x00, 0x3B, 0x81, 0x48});
+}
+
 bool VehicleQueriesMatch() noexcept {
     return Matches(0x54FFC0, Entry{0x8B, 0x4C, 0x24, 0x04, 0x56, 0x8B, 0x35, 0x94});
 }
@@ -2923,6 +3159,45 @@ bool InstallPolice() noexcept {
         Matches(0x46FEE0, Entry{0x83, 0xEC, 0x0C, 0x56, 0x8B, 0xC1, 0x8B, 0x50}) &&
         Matches(0x56E230, Entry{0x8B, 0x44, 0x24, 0x04, 0x85, 0xC0, 0x7D, 0x07}) &&
         PatchCalls({0x46FC3A}, 0x46FEE0, reinterpret_cast<std::uintptr_t>(&OnSeek));
+}
+
+bool InstallFootInspections() noexcept {
+    return PedQueriesMatch() &&
+        Matches(0x56E230, Entry{0x8B, 0x44, 0x24, 0x04, 0x85, 0xC0, 0x7D, 0x07}) &&
+        Matches(0x5696C0, Entry{0x83, 0xEC, 0x38, 0x8B, 0x44, 0x24, 0x3C, 0x8B}) &&
+        Matches(0x61A5A0, Entry{0x8B, 0x0D, 0xA8, 0x44, 0xB7, 0x00, 0xE9, 0x55}) &&
+        Matches(0x62F310, Entry{0x56, 0x8B, 0xF1, 0xE8, 0x78, 0xB0, 0xFE, 0xFF}) &&
+        Matches(0x668120, Entry{0x53, 0x55, 0x56, 0x57, 0x8B, 0xF1, 0xE8, 0x85}) &&
+        Matches(0x54FF90, Entry{0x8B, 0x4C, 0x24, 0x04, 0x8B, 0x15, 0x90, 0x44}) &&
+        PedLookMatches() &&
+        Matches(NativeCopFirst, Entry{0x64, 0xA1, 0, 0, 0, 0, 0x6A, 0xFF}) &&
+        Matches(NativeCopControl, Entry{0x64, 0xA1, 0, 0, 0, 0, 0x6A, 0xFF}) &&
+        Matches(NativeCopNext, Entry{0x53, 0x8B, 0x5C, 0x24, 0x08, 0x83, 0xBB, 0x98}) &&
+        PatchTaskMethod(CopWanderVtable + 8 * sizeof(void*), NativeCopNext,
+            reinterpret_cast<std::uintptr_t>(&OnPatrolFootNext)) &&
+        PatchTaskMethod(CopWanderVtable + 10 * sizeof(void*), NativeCopControl,
+            reinterpret_cast<std::uintptr_t>(&OnPatrolFootControl));
+}
+
+bool InstallRetailPrices() noexcept {
+    return Matches(NativeShopPrice, Entry{0x8B, 0x15, 0xCC, 0xA7, 0xA9, 0x00, 0x56, 0x33}) &&
+        Matches(0x49AD75, std::array<std::uint8_t, 6>{0x8B, 0x0D, 0x18, 0x67, 0xBA, 0x00}) &&
+        Matches(0x46EBB8, std::array<std::uint8_t, 6>{0xA1, 0x78, 0x3C, 0xA4, 0x00, 0x50}) &&
+        Matches(0x49BFFB, std::array<std::uint8_t, 5>{0x8B, 0x54, 0x24, 0x1C, 0x52}) &&
+        PatchCalls({0x46EBBE, 0x49C000}, NativeShopPrice, reinterpret_cast<std::uintptr_t>(&OnShopPrice));
+}
+
+bool InstallRepairPrices() noexcept {
+    return Matches(NativeGarageUpdate, Entry{0x81, 0xEC, 0xE8, 0x01, 0x00, 0x00, 0x53, 0x55}) &&
+        Matches(NativeGarageMessage, Entry{0xE9, 0xDB, 0x50, 0x12, 0x01, 0xE9, 0x84, 0xB8}) &&
+        Matches(NativeText, Entry{0x83, 0xEC, 0x20, 0x56, 0x57, 0x8B, 0x7C, 0x24}) &&
+        Matches(0x44C90D, std::array<std::uint8_t, 3>{0x57, 0x8B, 0xCE}) &&
+        Matches(0x44AC8E, Entry{0x83, 0xBA, 0x50, 0xCE, 0xB7, 0x00, 0x64, 0x7D}) &&
+        Matches(0x44B326, std::array<std::uint8_t, 5>{0x83, 0xC0, 0x9C, 0x33, 0xD2}) &&
+        Matches(0x44B335, std::array<std::uint8_t, 7>{0x68, 0x00, 0x00, 0xC8, 0x42, 0x6A, 0x10}) &&
+        PatchCalls({0x44787A, 0x4478E9, 0x44794A}, NativeText, reinterpret_cast<std::uintptr_t>(&OnGarageText)) &&
+        PatchCalls({0x44ACAE, 0x44B385}, NativeGarageMessage, reinterpret_cast<std::uintptr_t>(&OnGarageMessage)) &&
+        PatchCalls({0x44C910}, NativeGarageUpdate, reinterpret_cast<std::uintptr_t>(&OnGarageUpdate));
 }
 
 bool InstallPatrolRoutes() noexcept {
@@ -3181,9 +3456,7 @@ bool InstallStreetPedestrians() noexcept {
         Matches(0x66FDA0, Entry{0x6A, 0xFF, 0x68, 0x90, 0x55, 0x84, 0x00, 0x64}) &&
         PatchCalls({0x672672}, 0x66FDA0, reinterpret_cast<std::uintptr_t>(&OnChatPartner));
     Log(social ? "Installed: civilian conversation timing." : "Skipped: civilian conversation function differs.");
-    s_CrashGlancesEnabled = routines && PedQueriesMatch() &&
-        Matches(0x5DEDC0, Entry{0x56, 0x8B, 0xF1, 0x8B, 0x86, 0x48, 0x07, 0x00}) &&
-        Matches(0x5DF8D0, Entry{0xA1, 0x84, 0xCB, 0xB7, 0x00, 0x3B, 0x81, 0x48});
+    s_CrashGlancesEnabled = routines && PedQueriesMatch() && PedLookMatches();
     Log(s_CrashGlancesEnabled ? "Installed: civilian crash attention." : "Skipped: civilian looking function differs.");
     const bool reroute = Matches(0x674560, Entry{0x83, 0xEC, 0x08, 0x56, 0x8B, 0xF1, 0x8B, 0x4E}) &&
         Matches(0x671EF0, Entry{0x83, 0xEC, 0x18, 0x56, 0x8B, 0x74, 0x24, 0x20}) &&
@@ -3210,7 +3483,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.19.0");
+    Log("Ultimate Living World 0.20.0");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");
@@ -3239,6 +3512,9 @@ void Install(const std::filesystem::path& config) noexcept {
         s_PoliceCruise = InstallPoliceCruise();
         Log(s_PoliceCruise ? "Installed: civilian driving warnings and patrol investigations."
             : "Skipped: patrol cruise dispatcher differs.");
+        s_FootInspectionsEnabled = InstallFootInspections();
+        Log(s_FootInspectionsEnabled ? "Installed: foot officers inspect nearby reports."
+            : "Skipped: foot patrol task table differs.");
         Log(InstallSurrender() ? "Installed: voluntary arrest on F9." : "Skipped: arrest task differs.");
     }
     if (GetPrivateProfileIntW(L"Modules", L"AirSupport", 1, config.c_str())) {
@@ -3265,12 +3541,18 @@ void Install(const std::filesystem::path& config) noexcept {
     if (GetPrivateProfileIntW(L"Modules", L"Combat", 1, config.c_str())) {
         InstallCombat();
     }
+    if (GetPrivateProfileIntW(L"Modules", L"Economy", 1, config.c_str())) {
+        Log(InstallRetailPrices() ? "Installed: regional retail prices and matching checkout totals."
+            : "Skipped: retail price call sites differ.");
+        Log(InstallRepairPrices() ? "Installed: regional repair prices, garage messages and accounting."
+            : "Skipped: repair price or garage message call sites differ.");
+    }
     bool streetPedestrians{};
     if (GetPrivateProfileIntW(L"Modules", L"City", 1, config.c_str())) {
         InstallCity();
         streetPedestrians = InstallStreetPedestrians();
     }
-    if (traffic || streetPedestrians || s_PoliceCruise) {
+    if (traffic || streetPedestrians || s_PoliceCruise || s_FootInspectionsEnabled) {
         Log(InstallCarObservations() ? "Installed: siren and collision observations." : "Skipped: car observations.");
     }
 }

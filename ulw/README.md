@@ -1,11 +1,12 @@
-# Ultimate Living World 0.19.0
+# Ultimate Living World 0.20.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
 | Sistem | Bu paketteki değişiklik |
 | --- | --- |
 | Siviller | Silah sesi, yangın ve kazalar farklı tepkiler doğurur. Ağır bir kaza karşısında bazı yayalar bakar, bazıları kısa süre bekler veya uzaklaşır. Kaza güvenli bir mesafeden görülürse uygun bir tanık oyunun telefon animasyonuyla polis için ihbar bırakabilir. |
-| Polis | Yaya ve araç ekipleri son görüş konumunu paylaşabilir. Silah sesi ve tanıklar bir olay yeri ihbarı oluşturabilir. Aranma seviyesi yokken devriyeler doğrudan gördükleri tehlikeli sürüşe uyarı verebilir ve kısa süre gözlemleyebilir. Düşük aranma seviyesinde oyuncu teslim olabilir. Üç yıldızdan itibaren ikinci ekip, görülen hareket yönüne göre yol kesme rotası seçebilir. |
+| Polis | Yaya ve araç ekipleri son görüş konumunu paylaşabilir. Silah sesi ve tanıklar bir olay yeri ihbarı oluşturabilir. Erişilebilir bir ihbara yakın yaya polis kısa süre olay yerini inceleyebilir. Aranma seviyesi yokken araçlı devriyeler gördükleri tehlikeli sürüşe uyarı verebilir. Düşük aranma seviyesinde oyuncu teslim olabilir. Üç yıldızdan itibaren ikinci ekip yol kesme rotası seçebilir. |
+| Mağazalar ve tamir | Yemek, giyim, kişisel bakım ve araç modifiye fiyatları bölgeye göre değişir. Menü ve kasa aynı hesabı kullanır. Pay ’n’ Spray ücreti kırsalda $85, Los Santos’ta $100, San Fierro’da $112 ve Las Venturas’ta $124. Oyunun ücretsiz tamir koşulları geçerlidir. `Economy=0` bölgesel fiyatları kapatır. |
 | Hava desteği | Serbest dolaşımda polis helikopteri görüş bilgisini devriyelerle paylaşır. Görüş kesilince son bildirilen bölgeyi tarar. Gece projektörü tarama konumuna yönelir. |
 | Barikatlar | Oyunun dinamik barikat adayları yol genişliği, araç hızı, takip bilgisi ve kamera görüşüne göre elenir. Oyun yol geometrisini ve barikat araçlarını kendi yönetir. |
 | Trafik | Sürücüler profil ve araç tipine göre farklı takip mesafesi bırakabilir. Düz, çok şeritli bir yolda uzun süre yavaş kalan aracın arkasındaki sürücü, yan şeritte güvenli boşluk varsa geçebilir. Ardından uygun mesafede kendi şeridine döner. Yaklaşan dönüş, sinyal, hava ve sirenler hızı etkiler. |
@@ -74,4 +75,4 @@ Günlük oyun zamanı ilerledikçe NPC kaçışı, devriye rotaları, hava arama
 
 `build.cmd` var olan MSVC x86 ortamını kullanır ve paketi `bin/ulw/dist` altında üretir. GitHub Actions’taki **Build** iş akışı aynı adımları çalıştırır. Başarılı çalışmanın **Artifacts** bölümünde **UltimateLivingWorld** paketi çıkar. Arşivde ASI, INI, doğrulama betiği ve bu kılavuz bulunur.
 
-Belirli iş ve ev adreslerine giden bireysel NPC rotaları, yeni şehir etkinlikleri, ekonomi ve Chaos Missions görevlerinin oyun içi uyumluluk testleri tam sürüm için bekliyor.
+Belirli iş ve ev adreslerine giden bireysel NPC rotaları, taksi yolcu sistemi, yeni şehir etkinlikleri ve Chaos Missions görevlerinin oyun içi uyumluluk testleri tam sürüm için bekliyor.

@@ -4,6 +4,30 @@
 #include <cmath>
 
 namespace ulw {
+
+int RepairPrice(unsigned region) noexcept {
+    constexpr std::array prices{85, 100, 112, 124};
+    return region < prices.size() ? prices[region] : 100;
+}
+
+int RetailPrice(int nativePrice, unsigned region, unsigned section) noexcept {
+    if (nativePrice <= 0 || nativePrice > 50000 || region > 3) {
+        return nativePrice;
+    }
+    constexpr std::array<int, 4> vehicle{93, 100, 109, 115};
+    constexpr std::array<int, 4> personal{92, 100, 108, 119};
+    constexpr std::array<int, 4> meals{88, 100, 109, 117};
+    int percent = 100;
+    if (section == 1 || section == 2) {
+        percent = vehicle[region];
+    } else if (section >= 4 && section <= 7) {
+        percent = personal[region];
+    } else if (section == 8) {
+        percent = meals[region];
+    }
+    return std::max(1, (nativePrice * percent + 50) / 100);
+}
+
 namespace {
 
 unsigned Personality(std::uint16_t seed) noexcept {

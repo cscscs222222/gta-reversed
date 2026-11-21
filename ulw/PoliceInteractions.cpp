@@ -78,6 +78,51 @@ void PoliceIncidents::Reset() noexcept {
     *this = {};
 }
 
+bool FootPatrols::CanInspect(std::uint32_t officer, Point origin, const IncidentLead& lead,
+    std::uint32_t now) const noexcept {
+    const auto range = DistanceSquared(origin, lead.point);
+    if (!(range <= 28.0f * 28.0f) || !(std::abs(origin.z - lead.point.z) < 3.0f)) {
+        return false;
+    }
+    const auto& current = m_Patrols[(officer >> 8) % m_Patrols.size()];
+    if (current.officer == officer && current.assignedAt && now - *current.assignedAt < 9000) {
+        return false;
+    }
+    return std::none_of(m_Patrols.begin(), m_Patrols.end(), [&](const Patrol& other) {
+        return other.assignedAt && now - *other.assignedAt < 6800 &&
+            DistanceSquared(other.inspection.scene, lead.point) < 8.0f * 8.0f;
+    });
+}
+
+void FootPatrols::Assign(std::uint32_t officer, FootInspection inspection) noexcept {
+    auto& patrol = m_Patrols[(officer >> 8) % m_Patrols.size()];
+    if (patrol.officer != officer || !inspection.looking || !patrol.assignedAt) {
+        patrol.assignedAt = inspection.started;
+    }
+    patrol.officer = officer;
+    patrol.inspection = inspection;
+}
+
+std::optional<FootInspection> FootPatrols::Current(std::uint32_t officer, std::uintptr_t parent,
+    std::uintptr_t child) const noexcept {
+    const auto& patrol = m_Patrols[(officer >> 8) % m_Patrols.size()];
+    if (child && patrol.officer == officer && patrol.inspection.parent == parent && patrol.inspection.child == child) {
+        return patrol.inspection;
+    }
+    return std::nullopt;
+}
+
+void FootPatrols::Clear(std::uint32_t officer) noexcept {
+    auto& patrol = m_Patrols[(officer >> 8) % m_Patrols.size()];
+    if (patrol.officer == officer) {
+        patrol.inspection.child = 0;
+    }
+}
+
+void FootPatrols::Reset() noexcept {
+    *this = {};
+}
+
 unsigned DrivingEvidence(float speedSquared, bool severeCollision) noexcept {
     if (!std::isfinite(speedSquared) || speedSquared < 0.0f) {
         return 0;

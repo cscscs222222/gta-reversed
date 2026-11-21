@@ -231,6 +231,15 @@ void TestCityLife() {
     using ulw::CityVenue;
     using ulw::CrashReaction;
     using ulw::ResidentAction;
+    Check(ulw::RetailPrice(180, 0, 4) < 180 && ulw::RetailPrice(180, 1, 4) == 180 &&
+        ulw::RetailPrice(180, 2, 1) > 180 && ulw::RetailPrice(180, 3, 4) > ulw::RetailPrice(180, 2, 4),
+        "local shops should vary prices by region and section");
+    Check(ulw::RetailPrice(0, 3, 8) == 0 && ulw::RetailPrice(1, 0, 8) == 1 &&
+        ulw::RetailPrice(5100, 3, 10) == 5100 && ulw::RetailPrice(900, 0, 9) == 900 &&
+        ulw::RetailPrice(200, 7, 1) == 200, "free products, weapon and property costs and invalid regions must stay native");
+    Check(ulw::RepairPrice(0) == 85 && ulw::RepairPrice(1) == 100 &&
+        ulw::RepairPrice(2) == 112 && ulw::RepairPrice(3) == 124 && ulw::RepairPrice(9) == 100,
+        "repair fees must follow the native regions and fit signed garage instructions");
     constexpr std::uint16_t routineSeed = 0;
     Check(ulw::PreferredVenue(routineSeed, 8, 2, 1, 0) == CityVenue::BusStop &&
         ulw::PreferredVenue(routineSeed, 8, 2, 1, 0.7f) == CityVenue::Shelter,
@@ -289,6 +298,25 @@ void TestCityLife() {
     city.Reset();
     Check(!city.FindVenue(CityVenue::BusStop, pedestrian, 1, 1000) && city.CanCall(crash, 1600),
         "mission or session changes must clear world activity memory");
+}
+
+void TestFootInspections() {
+    ulw::FootPatrols beats;
+    constexpr ulw::IncidentLead crash{{14, 7, 0}, ulw::IncidentKind::Crash, 0x244};
+    Check(beats.CanInspect(0x701, {}, crash, 1200) && !beats.CanInspect(0x701, {-40, 0, 0}, crash, 1200) &&
+        !beats.CanInspect(0x701, {15, 6, 7}, crash, 1200), "beat investigations must stay local to the street level");
+    beats.Assign(0x701, {0x1000, 0x2000, crash.point, 1200, false});
+    Check(beats.Current(0x701, 0x1000, 0x2000).has_value() &&
+        !beats.Current(0x702, 0x1000, 0x2000) && !beats.Current(0x701, 0x1000, 0x2001),
+        "entry identity should require the same officer and actual tasks");
+    Check(!beats.CanInspect(0x801, {}, crash, 2200), "one report must not pull several officers off the same beat");
+    beats.Assign(0x701, {0x1000, 0x3000, crash.point, 4200, true});
+    Check(beats.Current(0x701, 0x1000, 0x3000)->looking, "the same officer should inspect the scene after arriving");
+    beats.Clear(0x701);
+    Check(!beats.Current(0x701, 0x1000, 0x3000) && beats.CanInspect(0x801, {}, crash, 8100) &&
+        !beats.CanInspect(0x701, {}, crash, 8100), "scene claims and officer cooldowns should expire separately");
+    beats.Reset();
+    Check(beats.CanInspect(0x701, {}, crash, 1201), "clearing a city session should discard reservations");
 }
 
 void TestCrashScenes() {
@@ -1080,6 +1108,8 @@ int wmain(int argc, wchar_t** argv) {
         TestPatrolTeam();
         std::puts("Patrols: observed motion, interception roles, sight loss, role expiry and following gaps passed.");
         TestPoliceInteractions();
+        TestFootInspections();
+        std::puts("Foot patrols: nearby reports, investigation assignments, arrival and cooldown passed.");
         std::puts("Police interactions: delayed witnesses, evidence range, warnings and voluntary arrest input passed.");
         TestCrashScenes();
         TestPedestrianRoutines();
