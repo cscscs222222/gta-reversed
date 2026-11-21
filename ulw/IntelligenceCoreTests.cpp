@@ -119,6 +119,55 @@ void TestPoliceSearch() {
         "a foot patrol should get the cruiser report");
 }
 
+void TestPatrolTeam() {
+    using ulw::PatrolMode;
+    using ulw::PatrolRole;
+    using ulw::SearchPhase;
+    constexpr auto lead = 0x80000201u;
+    constexpr auto second = 0x80000301u;
+    constexpr auto third = 0x80000401u;
+    const ulw::Point street{0, 10, 1};
+    const ulw::Point contact{0, 40, 1};
+    ulw::PoliceSearch search;
+    search.Observe(lead, 1000, street, {0, 35, 1}, true, PatrolMode::Car);
+    search.Observe(lead, 1250, street, contact, true, PatrolMode::Car);
+    const auto moving = search.Target(lead, 1300, street, PatrolMode::Car);
+    Check(moving.phase == SearchPhase::Pursue && moving.motion.y == 20, "direct observations should record travel direction");
+    search.Observe(lead, 1490, street, {90, 110, 1}, false, PatrolMode::Car);
+    const auto hidden = search.Target(lead, 1500, street, PatrolMode::Car);
+    Check(hidden.phase == SearchPhase::LastSeen && hidden.point.y == contact.y && hidden.motion.y == 0,
+        "hidden motion must not feed interception decisions");
+    search.Observe(lead, 1730, street, {100, 110, 1}, true, PatrolMode::Car);
+    Check(search.Target(lead, 1740, street, PatrolMode::Car).motion.x == 0,
+        "reacquisition must not treat unseen travel as observed motion");
+
+    ulw::PatrolTeam team;
+    Check(team.Assign(lead, 1330, 3, street, moving).role == PatrolRole::Pursuit,
+        "the first cruiser should keep contact");
+    const auto intercept = team.Assign(second, 1350, 3, {12, 10, 1}, moving);
+    Check(intercept.role == PatrolRole::Intercept && intercept.destination.y > contact.y &&
+        intercept.destination.y <= contact.y + 37 && intercept.destination.z == contact.z,
+        "one extra unit may project a bounded route using observed movement");
+    Check(team.Assign(third, 1370, 3, {-15, 10, 1}, moving).role == PatrolRole::Support,
+        "the next cruiser must not copy the intercept route");
+    Check(team.Assign(second, 1400, 3, {10, 10, 1}, hidden).role == PatrolRole::Pursuit &&
+        team.Assign(third, 1440, 3, {-15, 10, 1}, moving).role == PatrolRole::Intercept,
+        "loss of contact frees the interception role for a unit with a valid sighting");
+    Check(team.Assign(second, 1470, 2, street, moving).role == PatrolRole::Pursuit, "low wanted levels need no intercept");
+    Check(team.Assign(second, 1480, 3, {12, 10, 14}, moving).role == PatrolRole::Pursuit,
+        "cruisers on another level must have independent roles");
+    Check(team.Assign(third, 5000, 3, street, moving).role == PatrolRole::Pursuit, "old roles must expire");
+    team.Reset();
+    Check(team.Assign(second, 5020, 3, street, moving).role == PatrolRole::Pursuit, "reset must free team assignments");
+
+    constexpr ulw::DrivePedals pedals{0.9f, 0.05f};
+    const auto pursuit = ulw::PatrolFollowing(pedals, 1, {0, 8, 0}, {0, 1, 0}, {0, 0.27f, 0}, {0, 0.06f, 0}, 0);
+    Check(pursuit.gas < pedals.gas && pursuit.brake > pedals.brake, "a closing patrol must brake for the gap");
+    Check(ulw::PatrolFollowing(pedals, 6, {0, 8, 0}, {0, 1, 0}, {0, 0.27f, 0}, {0, 0.06f, 0}, 0).brake == pedals.brake &&
+        ulw::PatrolFollowing(pedals, 2, {6, 8, 0}, {0, 1, 0}, {0, 0.27f, 0}, {0, 0.06f, 0}, 0).brake == pedals.brake,
+        "army response and vehicles in another lane must keep native controls");
+}
+
 void TestCrashScenes() {
     ulw::CrashScenes scenes;
     constexpr ulw::Point scene{0, 15, 0}, north{0, 1, 0};
@@ -146,7 +195,7 @@ void TestCrashScenes() {
     Check(!scenes.Ahead({}, north, 2020), "a crash scene should clear once the car drives away");
     scenes.Observe({0x302, 2020, 1510, scene, 0.0f, 0.0f});
     Check(!scenes.Ahead({}, north, 2030), "stopping again must not revive an old impact");
-    ulw::TrafficInput input{50, 40, 0, 0, 12, 12, false};
+    ulw::TrafficInput input{50, 40, 0, 0, 12, false};
     const auto normal = ulw::TrafficLimit(input);
     input.crashAhead = true;
     Check(ulw::TrafficLimit(input) < normal, "the incident must lower the speed cap");
@@ -245,7 +294,7 @@ void TestAirSupportAndRoadblocks() {
 }
 
 void TestTrafficAndPhysics() {
-    ulw::TrafficInput input{40, 30, 0, 0, 12, 505, false};
+    ulw::TrafficInput input{40, 30, 0, 0, 12, false};
     const auto dry = ulw::TrafficLimit(input);
     Check(dry > 0 && dry <= input.cruiseSpeed, "traffic cap must use the cruise speed");
     input.wet = 1;
@@ -282,6 +331,46 @@ void TestTrafficAndPhysics() {
     vehicle.health = 250;
     const auto worn = road.Tune(native, vehicle);
     Check(worn.thrust < native.thrust && worn.brake < native.brake, "near-critical damage should reduce thrust and braking");
+}
+
+void TestTrafficSpacing() {
+    using ulw::DriverProfile;
+    Check(ulw::TrafficDriver(12, 420, 1500) == DriverProfile::Taxi &&
+        ulw::TrafficDriver(12, 414, 4600) == DriverProfile::Truck &&
+        ulw::TrafficDriver(12, 411, 1100) == DriverProfile::Sport,
+        "commercial, heavy and sports cars should use dedicated driver profiles");
+    constexpr ulw::Point north{0, 1, 0};
+    const auto turn = ulw::TrafficBendScale(north, {1, 0, 0}, 9, false, 0, DriverProfile::Average);
+    Check(turn < 0.8f && ulw::TrafficBendScale(north, {1, 0, 0}, 9, false, 1, DriverProfile::Truck) < turn &&
+        ulw::TrafficBendScale(north, {1, 0, 0}, 33, false, 1, DriverProfile::Truck) == 1.0f &&
+        ulw::TrafficBendScale(north, north, 8, true, 0, DriverProfile::Taxi) < 1.0f,
+        "close bends and signals should lower speed before arrival");
+
+    ulw::FollowingTraffic passage{22, {0, 0, 0}, {0, 14, 0}, north, north,
+        {0, 0.25f, 0}, {0, 0.10f, 0}, DriverProfile::Average, false, 0};
+    const auto dry = ulw::FollowingSpeed(passage);
+    Check(dry > 0 && dry < passage.nativeLimit, "a closing driver must ease off before reaching a queue");
+    passage.wet = 1;
+    passage.heavyLeader = true;
+    Check(ulw::FollowingSpeed(passage) < dry, "wet roads and heavy leaders require a larger following gap");
+    passage.leader = {4, 14, 0};
+    Check(ulw::FollowingSpeed(passage) == passage.nativeLimit, "a neighboring lane must not stop the driver");
+    passage.leader = {0, 14, 7};
+    Check(ulw::FollowingSpeed(passage) == passage.nativeLimit, "bridge traffic must not slow vehicles underneath");
+    passage.leader = {0, 14, 0};
+    passage.leaderForward = {0, -1, 0};
+    Check(ulw::FollowingSpeed(passage) == passage.nativeLimit, "head-on traffic must use native collision avoidance");
+    passage.nativeLimit = 0;
+    passage.leaderForward = north;
+    Check(ulw::FollowingSpeed(passage) == 0, "car following must preserve a native stop or red light");
+
+    ulw::TrafficHorns horns;
+    Check(horns.Allow(0x501, 1000, DriverProfile::Careful) && !horns.Allow(0x501, 4100, DriverProfile::Careful) &&
+        horns.Allow(0x501, 7200, DriverProfile::Careful), "careful drivers must wait longer to honk again in a queue");
+    Check(horns.Allow(0x502, 7210, DriverProfile::Aggressive) && !horns.Allow(0x502, 10209, DriverProfile::Aggressive) &&
+        horns.Allow(0x502, 10210, DriverProfile::Aggressive), "a new driver may honk and then has its own cooldown");
+    horns.Reset();
+    Check(horns.Allow(0x502, 10211, DriverProfile::Aggressive), "reset must discard queued horn state");
 }
 
 void TestEmergencyServices() {
@@ -618,9 +707,13 @@ int wmain(int argc, wchar_t** argv) {
         TestDecisions();
         std::puts("Core: frame budget, perception, memory, slot reuse and reactions passed.");
         TestPoliceSearch();
+        TestPatrolTeam();
+        std::puts("Patrols: observed motion, interception roles, sight loss, role expiry and following gaps passed.");
         TestCrashScenes();
         TestPedestrianRoutines();
         TestTrafficAndPhysics();
+        TestTrafficSpacing();
+        std::puts("Traffic: driver profiles, bends, headway, level separation and native stops passed.");
         TestEmergencyServices();
         std::puts("Emergency services: closing and crossing traffic, working crews and arrival braking passed.");
         std::puts("Pedestrians: routine timing, witness memory, and crash-aware footpaths passed.");

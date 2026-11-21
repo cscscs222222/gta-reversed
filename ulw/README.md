@@ -1,14 +1,14 @@
-# Ultimate Living World 0.12.0
+# Ultimate Living World 0.13.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
 | Sistem | Bu paketteki değişiklik |
 | --- | --- |
 | Siviller | Silah sesi, yangın ve yakındaki kazalar farklı tepkiler doğurur. Ağır kazanın görüş hattında kalan yaya enkaza bakabilir. Oyun, kazaya doğru giden kısa bir yaya rotasında alternatif yol arar. |
-| Polis | Yaya devriyeler ve polis otomobilleri son görüş konumunu paylaşabilir. Kapsanan araç takibinde polis, görüş kaybından sonra kaydedilen noktaya doğru yol seçer ve yaklaştığında daha geniş bir alanı tarar. |
+| Polis | Yaya ve araç ekipleri son görüş konumunu paylaşabilir. Üç yıldızdan itibaren uygun bir araç takibinde öncü araç takibi sürdürürken ikinci araç görülen hareket yönü üzerinden yol kesmeye çalışabilir. Polis sürücüleri yakın takipte yaklaşma hızına göre fren yapabilir. |
 | Hava desteği | Serbest dolaşımda polis helikopteri görüş bilgisini devriyelerle paylaşır. Görüş kesilince son bildirilen bölgeyi tarar. Gece projektörü tarama konumuna yönelir. |
 | Barikatlar | Oyunun dinamik barikat adayları yol genişliği, araç hızı, takip bilgisi ve kamera görüşüne göre elenir. Oyun yol geometrisini ve barikat araçlarını kendi yönetir. |
-| Trafik | Sivil sürücüler yağmur, sis, gece ve çarpışma nedeniyle yavaşlayabilir. Sirenli aracın gerçekten yaklaşıp yaklaşmadığı, rotaların kesişmesi ve araçların aynı seviyede olması hesaba katılır. Olay yerinde duran ekiplere doğru giden trafik de yavaşlayabilir. |
+| Trafik | Sürücüler profil ve araç tipine göre farklı takip mesafesi bırakabilir. Yaklaşan dönüş ve sinyaller uygun yollarda hızı etkiler. Duran kuyruklarda tekrarlanan araç kornaları seyrekleşir. Sivil trafik yağmur, sis, kazalar ve sirenli araçlara tepki verir. |
 | Acil servis | Ambulans ve itfaiye ekipleri, oyun tarafından belirlenen olay yerine yaklaşırken hızlarını daha erken düşürür. Islak zeminde ve siste fren daha erken başlar. Oyunun rota ve ekip görevleri kullanılır. |
 | Araç fiziği | Oyuncunun serbest dolaşımda kullandığı otomobil ve motosikletlerin tutuşu, frenleri ve çekişi yol ve hasar durumuna göre değişir. Düşük hızda uzun süre tam gaz kalan hasarlı motor daha çabuk ısınır ve geçici güç kaybeder. Otomobilin hasarlı çamurluğu veya tamponu yakınındaki tekerlekleri etkiler. |
 | Çatışma | Art arda vurulan silahlı polis ve çete üyeleri kısa serilere geçer, uygun siper arar ve güvenli bir noktaya ulaşınca kısa süre bekler. Cephane azalırsa veya silah şarjör değiştiriyorsa bekleme uzayabilir. Bir yanda ateş hattı açılırsa NPC o tarafa ilerleyebilir. Ağır yaralanan veya cephanesi tükenen NPC uygun bir yoldan kısa süre geri çekilebilir. |
@@ -45,6 +45,8 @@ Yeni yaya davranışını görmek için serbest dolaşımda yakındaki bir sivil
 Araçları denemek için serbest dolaşımda aynı motosikletle kuru ve ıslak yolda fren yap. Hasarlı bir otomobilde düşük hızda uzun süre gaz verdikten sonra hızlanmayı dene. Ardından gazı azaltıp motorun soğumasını bekle. Windows testleri ısınma, soğuma, tamir sonrası sıfırlama ve bölgesel hasar hesaplarını kapsar.
 
 Ambulans veya itfaiye serbest dolaşımda bir olaya gelirken yavaşlamasını ve çevredeki trafiği gözle. `emergencyApproaches` olay yerine yaklaşırken değiştirilen gaz ve fren kararlarını, `emergencyYieldCalls` ise acil aracın etkisiyle düşürülen sivil hız sınırlarını sayar. `Emergency=0` acil ekiplerin yaklaşma davranışını, `Traffic=0` sivil araçlara uygulanan hız sınırlarını kapatır.
+
+Trafiği denemek için yağmurda viraja yaklaşan ağır araçları ve bir ışıkta durup yeniden hareket eden kuyruğu izle. `bendLimits`, `followingLimits` ve `queueHornSkips` sayaçları yeni kararları gösterir. Polis takibini denemek için serbest dolaşımda üç yıldızla açık bir yolda birden fazla devriye aracının seni gördüğü bir kovalamacaya gir. `interceptRoutes` yol kesme rotalarını, `patrolBraking` daha fazla takip mesafesi bırakılan kararları sayar.
 
 Çatışma değişikliklerini denemek için serbest dolaşımda bir bölge savaşında AK-47 veya Micro Uzi taşıyan bir düşmanla karşılaş. Düşmanın ilk atış serilerini ve peş peşe iki isabetten sonraki serilerini karşılaştır. Günlükte `extendedBursts` uzatılan serileri, `shorterBursts` kısaltılanları ve `suppressionHits` baskıyı başlatan veya uzatan isabetleri sayar. `Combat=0` bu davranışları ve isabet ayarını kapatır.
 

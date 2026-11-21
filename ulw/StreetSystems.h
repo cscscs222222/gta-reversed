@@ -15,6 +15,7 @@ enum class PatrolMode : std::uint8_t { Foot, Car, Air };
 struct SearchTarget {
     SearchPhase phase;
     Point point;
+    Point motion{};
 };
 
 class PoliceSearch {
@@ -33,6 +34,7 @@ private:
         std::uint32_t sampledAt{};
         std::uint32_t seenAt{};
         Point lastSeen{};
+        Point motion{};
         bool sampled{};
         bool hasSeen{};
         bool visible{};
@@ -52,6 +54,31 @@ private:
 
 bool HasSearchContact(SearchPhase phase) noexcept;
 Point AirSearchPoint(SearchTarget target, Point helicopter, Point forward, float flightReferenceZ) noexcept;
+
+enum class PatrolRole : std::uint8_t { Pursuit, Intercept, Support };
+
+struct PatrolAssignment {
+    PatrolRole role;
+    Point destination;
+};
+
+class PatrolTeam {
+public:
+    PatrolAssignment Assign(std::uint32_t unit, std::uint32_t now, unsigned wanted,
+        Point unitPosition, const SearchTarget& sighting) noexcept;
+    void Reset() noexcept;
+
+private:
+    struct Unit {
+        std::uint32_t ref{};
+        std::uint32_t at{};
+        Point position{};
+        Point contact{};
+        PatrolRole role{};
+        bool active{};
+    };
+    std::array<Unit, 24> m_Units{};
+};
 
 struct RoadblockCandidate {
     Point road;
@@ -80,16 +107,50 @@ private:
     bool m_HasAttempt{};
 };
 
+enum class DriverProfile : std::uint8_t { Careful, Average, Hurried, Aggressive, Learner, Experienced, Taxi, Truck, Sport };
+
+DriverProfile TrafficDriver(std::uint16_t seed, std::uint16_t model, float mass) noexcept;
+float TrafficBendScale(Point forward, Point nextDirection, float distance, bool signals, float wet,
+    DriverProfile driver) noexcept;
+
+struct FollowingTraffic {
+    float nativeLimit;
+    Point follower;
+    Point leader;
+    Point forward;
+    Point leaderForward;
+    Point followerVelocity;
+    Point leaderVelocity;
+    DriverProfile driver;
+    bool heavyLeader;
+    float wet;
+};
+float FollowingSpeed(const FollowingTraffic& traffic) noexcept;
+
+class TrafficHorns {
+public:
+    bool Allow(std::uint32_t vehicle, std::uint32_t now, DriverProfile driver) noexcept;
+    void Reset() noexcept;
+
+private:
+    struct Request {
+        std::uint32_t vehicle{};
+        std::optional<std::uint32_t> at{};
+    };
+    std::array<Request, 256> m_Requests{};
+};
+
 struct TrafficInput {
     float nativeLimit;
     float cruiseSpeed;
     float wet;
     float fog;
     unsigned hour;
-    std::uint32_t seed;
     bool recentCollision;
     float emergencyScale{1.0f};
     bool crashAhead{};
+    DriverProfile driver{DriverProfile::Average};
+    float bendScale{1.0f};
 };
 float TrafficLimit(const TrafficInput& input) noexcept;
 
@@ -112,6 +173,8 @@ struct DrivePedals {
 };
 
 DrivePedals EmergencyApproach(DrivePedals native, float distanceSquared, float speedSquared, float wet, float fog) noexcept;
+DrivePedals PatrolFollowing(DrivePedals native, unsigned wanted, Point offset, Point forward,
+    Point policeVelocity, Point targetVelocity, float wet) noexcept;
 
 struct CrashObservation {
     std::uint32_t vehicle;

@@ -60,10 +60,20 @@ void PoliceSearch::Observe(std::uint32_t officer, std::uint32_t now,
         record = {};
         record.ref = officer;
     }
+    const bool continuous = record.visible && record.hasSeen;
+    const auto observedFor = now - record.seenAt;
     record.sampled = true;
     record.sampledAt = now;
     record.visible = visible;
     if (visible) {
+        record.motion = {};
+        if (continuous && observedFor >= 100 && observedFor <= 850) {
+            const auto scale = 1000.0f / static_cast<float>(observedFor);
+            const Point motion{(point.x - record.lastSeen.x) * scale, (point.y - record.lastSeen.y) * scale, 0.0f};
+            if (DistanceSquared({}, motion) <= 44.0f * 44.0f && std::abs(point.z - record.lastSeen.z) < 4.0f) {
+                record.motion = motion;
+            }
+        }
         record.lastSeen = point;
         record.seenAt = now;
         record.hasSeen = true;
@@ -80,7 +90,7 @@ SearchTarget PoliceSearch::Target(std::uint32_t officer, std::uint32_t now,
     const bool ownRecord = record.sampled && record.ref == officer;
     const bool hasLocalSighting = ownRecord && record.hasSeen && now - record.seenAt < 6500;
     if (ownRecord && record.visible && now - record.sampledAt < 420) {
-        return {SearchPhase::Pursue, record.lastSeen};
+        return {SearchPhase::Pursue, record.lastSeen, record.motion};
     }
     const Report* nearby{};
     auto newestAge = hasLocalSighting ? std::min(3800u, now - record.seenAt) : 3800u;
@@ -113,6 +123,69 @@ SearchTarget PoliceSearch::Target(std::uint32_t officer, std::uint32_t now,
     destination.x += radius * sweep[section].x;
     destination.y += radius * sweep[section].y;
     return {SearchPhase::Search, destination};
+}
+
+PatrolAssignment PatrolTeam::Assign(std::uint32_t unit, std::uint32_t now, unsigned wanted, Point unitPosition,
+    const SearchTarget& sighting) noexcept {
+    constexpr float RadioDistanceSquared = 95.0f * 95.0f;
+    constexpr unsigned RoleExpiry = 3200;
+    const auto sameSlot = [unit](const Unit& entry) { return entry.active && (entry.ref >> 8) == (unit >> 8); };
+    auto own = std::find_if(m_Units.begin(), m_Units.end(), sameSlot);
+    if (wanted < 3 || wanted > 6 || sighting.phase != SearchPhase::Pursue) {
+        if (own != m_Units.end() && own->ref == unit) {
+            *own = {};
+        }
+        return {PatrolRole::Pursuit, sighting.point};
+    }
+    if (own == m_Units.end()) {
+        own = std::find_if(m_Units.begin(), m_Units.end(), [now](const Unit& entry) {
+            return !entry.active || now - entry.at >= RoleExpiry;
+        });
+        if (own == m_Units.end()) {
+            return {PatrolRole::Support, sighting.point};
+        }
+    }
+    const auto speedSquared = DistanceSquared({}, sighting.motion);
+    const auto unitDistance = DistanceSquared(unitPosition, sighting.point);
+    const bool canCutOff = speedSquared >= 6.0f * 6.0f && speedSquared <= 44.0f * 44.0f &&
+        unitDistance >= 14.0f * 14.0f && unitDistance <= RadioDistanceSquared;
+    bool hasLead{};
+    bool hasInterceptor{};
+    bool hasNearLead{};
+    for (const auto& other : m_Units) {
+        if (!other.active || (other.ref >> 8) == (unit >> 8) || now - other.at >= RoleExpiry ||
+            !(DistanceSquared(other.contact, sighting.point) <= 70.0f * 70.0f) ||
+            !(DistanceSquared(other.position, unitPosition) <= RadioDistanceSquared) ||
+            std::abs(other.position.z - unitPosition.z) > 6.0f) {
+            continue;
+        }
+        hasLead |= other.role == PatrolRole::Pursuit;
+        hasInterceptor |= other.role == PatrolRole::Intercept;
+        hasNearLead |= other.role == PatrolRole::Pursuit && DistanceSquared(other.position, sighting.point) < unitDistance;
+    }
+    auto role = PatrolRole::Pursuit;
+    auto target = sighting.point;
+    if (hasLead) {
+        const bool currentLead = own->active && own->ref == unit && own->role == PatrolRole::Pursuit &&
+            now - own->at < RoleExpiry && !hasNearLead;
+        if (!currentLead) {
+            role = PatrolRole::Support;
+            if (!hasInterceptor && canCutOff) {
+                const auto speed = std::sqrt(speedSquared);
+                const auto leadDistance = std::clamp(speed * (wanted >= 5 ? 1.8f : 1.3f), 11.0f, 37.0f);
+                const auto projection = leadDistance / speed;
+                target.x += sighting.motion.x * projection;
+                target.y += sighting.motion.y * projection;
+                role = PatrolRole::Intercept;
+            }
+        }
+    }
+    *own = {unit, now, unitPosition, sighting.point, role, true};
+    return {role, target};
+}
+
+void PatrolTeam::Reset() noexcept {
+    m_Units = {};
 }
 
 bool PoliceSearch::HasRecentReport(Point position, std::uint32_t now) const noexcept {
@@ -180,13 +253,104 @@ void RoadblockAttempts::Reset() noexcept {
     m_HasAttempt = false;
 }
 
+DriverProfile TrafficDriver(std::uint16_t seed, std::uint16_t model, float mass) noexcept {
+    if (model == 420 || model == 438) {
+        return DriverProfile::Taxi;
+    }
+    if (mass >= 3100.0f) {
+        return DriverProfile::Truck;
+    }
+    constexpr std::array<std::uint16_t, 7> sports{411, 415, 429, 451, 477, 506, 541};
+    if (std::find(sports.begin(), sports.end(), model) != sports.end()) {
+        return DriverProfile::Sport;
+    }
+    constexpr std::array<DriverProfile, 10> drivers{
+        DriverProfile::Careful, DriverProfile::Average, DriverProfile::Hurried, DriverProfile::Average,
+        DriverProfile::Aggressive, DriverProfile::Learner, DriverProfile::Experienced, DriverProfile::Average,
+        DriverProfile::Careful, DriverProfile::Experienced};
+    return drivers[(seed * 0x9e3779b9u >> 24) % drivers.size()];
+}
+
+float TrafficBendScale(Point forward, Point nextDirection, float distance, bool signals, float wet,
+    DriverProfile driver) noexcept {
+    if (!(distance >= 0.0f && distance < 32.0f)) {
+        return 1.0f;
+    }
+    const auto proximity = 1.0f - Unit((distance - 5.0f) / 27.0f);
+    const auto dot = forward.x * nextDirection.x + forward.y * nextDirection.y;
+    const auto turn = Unit((0.92f - dot) / 0.98f);
+    const auto extra = driver == DriverProfile::Truck ? 0.17f : driver == DriverProfile::Learner ? 0.10f : 0.0f;
+    return 1.0f - proximity * std::min(0.61f, turn * (0.37f + extra + 0.12f * Unit(wet)) +
+        (signals ? 0.08f : 0.0f));
+}
+
+float FollowingSpeed(const FollowingTraffic& traffic) noexcept {
+    const auto dx = traffic.leader.x - traffic.follower.x;
+    const auto dy = traffic.leader.y - traffic.follower.y;
+    const auto distance = dx * traffic.forward.x + dy * traffic.forward.y;
+    const auto side = dx * traffic.forward.y - dy * traffic.forward.x;
+    const auto aligned = traffic.forward.x * traffic.leaderForward.x + traffic.forward.y * traffic.leaderForward.y;
+    if (!std::isfinite(traffic.nativeLimit) ||
+        !(traffic.nativeLimit > 0.0f && distance > 0.0f && distance <= 37.0f && aligned >= 0.66f) ||
+        !(std::abs(side) < 2.5f && std::abs(traffic.follower.z - traffic.leader.z) < 2.7f)) {
+        return traffic.nativeLimit;
+    }
+    constexpr std::array<float, 9> headways{1.42f, 1.20f, 1.05f, 0.92f, 1.66f, 1.29f, 1.15f, 1.78f, 1.12f};
+    const auto driver = static_cast<unsigned>(traffic.driver);
+    const auto headway = (driver < headways.size() ? headways[driver] : 1.20f) + 0.52f * Unit(traffic.wet);
+    const auto standstill = 4.6f + (traffic.heavyLeader ? 2.4f : 0.0f) +
+        (traffic.driver == DriverProfile::Truck ? 1.7f : 0.0f);
+    const auto followerSpeed = traffic.followerVelocity.x * traffic.forward.x + traffic.followerVelocity.y * traffic.forward.y;
+    const auto leaderSpeed = traffic.leaderVelocity.x * traffic.forward.x + traffic.leaderVelocity.y * traffic.forward.y;
+    if (!std::isfinite(followerSpeed) || !std::isfinite(leaderSpeed)) {
+        return traffic.nativeLimit;
+    }
+    const auto speed = std::max(0.0f, followerSpeed) * 60.0f;
+    const auto lead = std::max(0.0f, leaderSpeed) * 60.0f;
+    const auto closing = std::max(0.0f, speed - lead);
+    const auto desired = (distance - standstill - 0.26f * closing) / headway;
+    const auto cap = lead + desired;
+    return std::clamp(cap, 0.0f, traffic.nativeLimit);
+}
+
+bool TrafficHorns::Allow(std::uint32_t vehicle, std::uint32_t now, DriverProfile driver) noexcept {
+    const auto interval = driver == DriverProfile::Aggressive || driver == DriverProfile::Hurried ? 3000u : 6200u;
+    auto& request = m_Requests[(vehicle >> 8) % m_Requests.size()];
+    if (request.vehicle == vehicle && request.at && now - *request.at < interval) {
+        return false;
+    }
+    request = {vehicle, now};
+    return true;
+}
+
+void TrafficHorns::Reset() noexcept {
+    m_Requests = {};
+}
+
+DrivePedals PatrolFollowing(DrivePedals native, unsigned wanted, Point offset, Point forward,
+    Point policeVelocity, Point targetVelocity, float wet) noexcept {
+    const auto ahead = offset.x * forward.x + offset.y * forward.y;
+    const auto lateral = offset.x * forward.y - offset.y * forward.x;
+    const auto closing = (policeVelocity.x - targetVelocity.x) * forward.x +
+        (policeVelocity.y - targetVelocity.y) * forward.y;
+    if (!(wanted >= 1 && wanted <= 4 && native.gas >= 0.0f && ahead > 0.0f && ahead < 25.0f &&
+            std::abs(lateral) < 3.0f && std::abs(offset.z) < 3.0f && closing > 0.025f)) {
+        return native;
+    }
+    const auto gap = (wanted == 1 ? 10.5f : wanted == 2 ? 8.5f : 6.0f) + 2.5f * Unit(wet);
+    const auto ease = Unit((gap + 27.0f * closing - ahead) / 11.0f);
+    return {native.gas * (1.0f - ease), std::max(native.brake, 0.48f * ease)};
+}
+
 float TrafficLimit(const TrafficInput& input) noexcept {
     if (!std::isfinite(input.nativeLimit) || !std::isfinite(input.cruiseSpeed) ||
         input.nativeLimit <= 0.0f || input.cruiseSpeed <= 0.0f) {
         return input.nativeLimit;
     }
-    constexpr std::array<float, 4> temperament{0.86f, 0.94f, 0.98f, 1.0f};
-    auto cap = input.cruiseSpeed * temperament[(input.seed * 0x9e3779b9u >> 26) % temperament.size()];
+    constexpr std::array<float, 9> temperament{0.87f, 0.95f, 0.99f, 1.0f, 0.83f, 0.96f, 0.95f, 0.86f, 1.0f};
+    const auto driver = static_cast<unsigned>(input.driver);
+    auto cap = input.cruiseSpeed * (driver < temperament.size() ? temperament[driver] : 0.95f);
+    cap *= std::clamp(std::isfinite(input.bendScale) ? input.bendScale : 1.0f, 0.39f, 1.0f);
     cap *= 1.0f - 0.17f * Unit(input.wet) - 0.18f * Unit(input.fog);
     if (IsNight(input.hour)) {
         cap *= 0.96f;
