@@ -740,6 +740,95 @@ void TestVehicleDamageAndCooling() {
         "regional body damage should limit local braking and grip without directly reducing engine power");
 }
 
+void TestVehicleDynamics() {
+    using ulw::DrivenAxle;
+    using ulw::RoadMaterial;
+    using ulw::RoadVehicle;
+    const auto paved = ulw::ClassifySurface(2, 0);
+    const auto grass = ulw::ClassifySurface(3 | (2u << 23), 2);
+    const auto sand = ulw::ClassifySurface(4, 0);
+    const auto mud = ulw::ClassifySurface(3, 8);
+    Check(paved.material == RoadMaterial::Paved && grass.material == RoadMaterial::Grass && grass.roughness == 2 &&
+        sand.material == RoadMaterial::Sand && mud.material == RoadMaterial::Mud &&
+        ulw::ClassifySurface(3, 4).material == RoadMaterial::Gravel &&
+        ulw::ClassifySurface(3 | 0x10000u, 2).material == RoadMaterial::Wet,
+        "native material and wheel flags should classify each contact");
+    Check(ulw::ClassifyRoadVehicle(411, 1400, false, false) == RoadVehicle::Sport &&
+        ulw::ClassifyRoadVehicle(470, 1550, false, false) == RoadVehicle::Utility &&
+        ulw::ClassifyRoadVehicle(431, 3000, false, false) == RoadVehicle::Heavy &&
+        ulw::ClassifyRoadVehicle(420, 1100, false, false) == RoadVehicle::Compact &&
+        ulw::ClassifyRoadVehicle(521, 520, false, true) == RoadVehicle::Motorcycle,
+        "handling classes should distinguish sports cars, heavy vehicles and motorbikes");
+    Check(ulw::WheelDriven(DrivenAxle::Front, 0) && !ulw::WheelDriven(DrivenAxle::Front, 1) &&
+        ulw::WheelDriven(DrivenAxle::Rear, 5) && !ulw::WheelDriven(DrivenAxle::Both, 6),
+        "only valid wheels on a driven axle should receive engine braking");
+
+    constexpr ulw::WheelForces base{0.15f, 0.20f, 0.25f};
+    ulw::WheelContact road{paved, RoadVehicle::Standard, DrivenAxle::Rear, 0, 0.55f, 0.36f, 0.09f, false};
+    const auto dry = ulw::DynamicWheelResponse(base, road, 0, 0.7f, 0.0f, 0.48f, false);
+    road.surface = grass;
+    const auto wet = ulw::DynamicWheelResponse(base, road, 1, 0.7f, 0.0f, 0.48f, false);
+    Check(wet.grip < dry.grip && wet.thrust < dry.thrust, "wet grass should offer less grip and propulsion than paving");
+    road.surface = sand;
+    road.vehicle = RoadVehicle::Heavy;
+    const auto truck = ulw::DynamicWheelResponse(base, road, 0, 0.7f, 0.0f, 0.48f, false);
+    road.vehicle = RoadVehicle::Utility;
+    Check(ulw::DynamicWheelResponse(base, road, 0, 0.7f, 0.0f, 0.48f, false).thrust > truck.thrust,
+        "off-road handling should lose less propulsion on sand");
+    road.surface = paved;
+    const auto front = ulw::DynamicWheelResponse(base, road, 0, 0, 0.8f, 0.48f, false);
+    road.wheel = 1;
+    const auto rear = ulw::DynamicWheelResponse(base, road, 0, 0, 0.8f, 0.48f, false);
+    Check(front.grip > rear.grip && front.brake > rear.brake, "braking should transfer load toward the front axle");
+    constexpr ulw::WheelForces coasting{0.0f, 0.0f, 0.25f};
+    Check(ulw::DynamicWheelResponse(coasting, road, 0, 0, 0, 0.48f, false).brake > 0,
+        "driven wheels should supply a small closed-throttle braking effect");
+    road.handbrake = true;
+    Check(ulw::DynamicWheelResponse(coasting, road, 0, 0, 0, 0.48f, false).brake == 0 &&
+        ulw::DynamicWheelResponse(base, road, 1, 0.7f, 0, 1, true).grip == base.grip,
+        "handbrake response and burst tyre grip must retain native handling");
+
+    ulw::TyreTemperature sliding, rolling;
+    for (std::uint32_t tick = 500; tick <= 5000; tick += 100) {
+        ulw::UpdateTyreTemperature(sliding, tick, road, 0, true);
+        ulw::UpdateTyreTemperature(rolling, tick, road, 1, false);
+    }
+    Check(sliding.value > rolling.value && ulw::UpdateTyreTemperature(sliding, 5000, road, 1, false) == sliding.value,
+        "sliding must build heat while several wheel callbacks at one time must not advance it");
+    Check(ulw::UpdateTyreTemperature(sliding, 40000, road, 1, false) == 0.48f, "idle tyres should return to baseline");
+
+    constexpr ulw::SuspensionSpring spring{1.0f, 0.55f};
+    const auto relaxed = ulw::TuneSpring(spring, RoadVehicle::Sport, 0.7f, 0, 0, 0, true);
+    const auto compressed = ulw::TuneSpring(spring, RoadVehicle::Sport, 0.1f, 0, 0.9f, 0, true);
+    Check(relaxed.force == spring.force && compressed.force > spring.force && compressed.bias > spring.bias &&
+        ulw::TuneSpring(spring, RoadVehicle::Sport, 0.1f, 0, 0.9f, 0, false).bias < spring.bias,
+        "progressive springs should resist bottoming and distribute load under braking");
+    Check(ulw::TuneDamping(0.2f, RoadVehicle::Sport, paved, 0.12f) >
+        ulw::TuneDamping(0.2f, RoadVehicle::Sport, grass, 0.12f) &&
+        ulw::TuneDamping(0.2f, RoadVehicle::Utility, grass, -0.12f) > 0.2f,
+        "rough impacts and rebound should receive different damping");
+
+    constexpr std::array<ulw::GearBand, 6> stock{{
+        {-0.15f, -0.01f, -0.15f}, {0.36f, 0.24f, 0.0f}, {0.60f, 0.52f, 0.15f},
+        {0.81f, 0.74f, 0.46f}, {1.10f, 1.10f, 0.68f}, {}
+    }};
+    auto sport = stock;
+    auto heavy = stock;
+    Check(ulw::TuneShiftBands(sport, 4, RoadVehicle::Sport, 1.0f, 0.17f) &&
+        ulw::TuneShiftBands(heavy, 4, RoadVehicle::Heavy, 0.15f, 0),
+        "valid gear bands should be adjustable for vehicle load");
+    Check(sport[1].up > stock[1].up && heavy[1].up < stock[1].up && sport[4].up == stock[4].up &&
+        sport[0].down == stock[0].down && sport[2].down < sport[1].up,
+        "earlier and later upshifts must retain reverse, top speed and separation between shift points");
+    auto damaged = stock;
+    damaged[2].down = 0.7f;
+    Check(!ulw::TuneShiftBands(damaged, 4, RoadVehicle::Sport, 1, 0) && damaged[1].up == stock[1].up,
+        "malformed gear thresholds must remain intact");
+    Check(ulw::ShapeThrottle(0.75f, RoadVehicle::Heavy, 0.20f) <
+        ulw::ShapeThrottle(0.75f, RoadVehicle::Sport, 0) && ulw::ShapeThrottle(-0.7f, RoadVehicle::Heavy, 0.2f) == -0.7f,
+        "inclines and class should shape positive gas while reverse stays native");
+}
+
 void TestCityActivity() {
     const auto laRush = ulw::AmbientActivity(8, 3, 1, 0, 0);
     const auto laLate = ulw::AmbientActivity(23, 3, 1, 0, 0);
@@ -845,6 +934,8 @@ int wmain(int argc, wchar_t** argv) {
         std::puts("Street systems: police search and reports, traffic limits, wet grip and brake fade passed.");
         TestVehicleDamageAndCooling();
         std::puts("Vehicles: engine load, cooling, repair, local damage and motorcycle grip passed.");
+        TestVehicleDynamics();
+        std::puts("Vehicle dynamics: surface grip, tyre heat, weight transfer, damping and bounded shift points passed.");
         TestAirSupportAndRoadblocks();
         std::puts("Police support: air and ground reports, search routes and roadblock placement passed.");
         TestMissionProtection();

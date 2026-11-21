@@ -57,6 +57,7 @@ constexpr std::uintptr_t StandardWanderVtable = 0x85A200;
 constexpr std::uintptr_t NativeWanderNext = 0x674140;
 constexpr std::uintptr_t NativeWanderFirst = 0x6740E0;
 constexpr std::uintptr_t WalkPointVtable = 0x86FD50;
+constexpr std::uintptr_t SurfaceFlags = 0xB795CC;
 constexpr std::uint32_t Walking = 4;
 constexpr std::uint32_t Jogging = 5;
 constexpr std::uint32_t Running = 6;
@@ -124,6 +125,11 @@ using ProcessWheel = void(__thiscall*)(void*, void*, void*, void*, void*, int, f
     std::int8_t, float*, std::int32_t*, std::uint16_t);
 using ProcessBikeWheel = void(__thiscall*)(void*, void*, void*, void*, void*, int, float, float, float, float,
     std::int8_t, float*, std::int32_t*, std::int32_t, std::uint16_t);
+using SpringCollision = bool(__thiscall*)(void*, float, void*, void*, float, float, float*);
+using SpringCollisionAlt = bool(__thiscall*)(void*, float, void*, void*, float, float, void*, float*);
+using SpringDamping = bool(__thiscall*)(void*, float, float, void*, void*, void*);
+using DriveAcceleration = float(__thiscall*)(void*, const float*, std::uint8_t*, float*, float*, float*, float*,
+    std::uint8_t, std::uint8_t);
 
 ulw::IntelligenceCore s_Core{};
 ulw::MissionState s_Missions{};
@@ -198,6 +204,9 @@ unsigned s_CityVisits{};
 unsigned s_CrashWaits{};
 unsigned s_CrashDepartures{};
 unsigned s_CrashCalls{};
+unsigned s_SurfaceResponses{};
+unsigned s_SpringResponses{};
+unsigned s_DriveResponses{};
 unsigned s_AllocationFailures{};
 std::uint32_t s_LastLogTime{};
 std::uint32_t s_LastGameTime{};
@@ -219,6 +228,8 @@ bool s_CivilianShots{};
 bool s_CityTasks{};
 bool s_CityVenues{};
 bool s_CityPhones{};
+bool s_CarContacts{};
+bool s_BikeContacts{};
 std::uint32_t s_StreetTime{};
 
 template<typename T>
@@ -277,6 +288,9 @@ void LogActivity(std::uint32_t now) noexcept {
     Log(message);
     std::snprintf(message, sizeof(message), "scheduledVisits=%u crashWaits=%u crashDepartures=%u crashCalls=%u",
         s_CityVisits, s_CrashWaits, s_CrashDepartures, s_CrashCalls);
+    Log(message);
+    std::snprintf(message, sizeof(message), "surfaceResponses=%u springResponses=%u driveResponses=%u",
+        s_SurfaceResponses, s_SpringResponses, s_DriveResponses);
     Log(message);
     std::snprintf(message, sizeof(message), "coverHolds=%u coverPeeks=%u tacticalWithdrawals=%u allyWaits=%u gangCasualties=%u",
         s_CoverHolds, s_CoverPeeks, s_Withdrawals, s_AllyWaits, s_GangCasualties);
@@ -1855,13 +1869,75 @@ float __cdecl OnTrafficSpeed(void* car) noexcept {
     return adjusted;
 }
 
-ulw::WheelForces TunePlayerWheel(const void* vehicle, ulw::WheelForces forces, int wheel,
-    bool damagedTyre, bool motorcycle) noexcept {
-    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+bool TunableRoadVehicle(const void* vehicle, bool motorcycle, std::uint32_t now) noexcept {
     const auto type = motorcycle ? 9 : 0;
-    if (!StreetActive(now) || Read<std::int32_t>(vehicle, 0x594) != type || Read<std::uint8_t>(vehicle, 0x2F) != 0 ||
-        Read<std::int8_t>(vehicle, 0x424) >= 0 || Read<std::uint8_t>(vehicle, 0x4A4) == 2 ||
-        (Read<std::uint8_t>(vehicle, 0x36) >> 3) != 0 || !GameValue<void*>(VehiclePool)) {
+    return Read<std::int32_t>(vehicle, 0x594) == type && Read<std::uint8_t>(vehicle, 0x2F) == 0 &&
+        Read<std::int8_t>(vehicle, 0x424) < 0 && Read<std::uint8_t>(vehicle, 0x4A4) != 2 &&
+        (Read<std::uint8_t>(vehicle, 0x36) >> 3) == 0 && GameValue<void*>(VehiclePool) && StreetActive(now);
+}
+
+float Dot(ulw::Point left, ulw::Point right) noexcept {
+    return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+ulw::RoadVehicle RoadVehicleClass(const void* vehicle, bool motorcycle) noexcept {
+    return ulw::ClassifyRoadVehicle(Read<std::uint16_t>(vehicle, 0x22), Read<float>(vehicle, 0x8C),
+        (Read<std::uint32_t>(vehicle, 0x38C) & 0x00300000u) != 0, motorcycle);
+}
+
+ulw::DrivenAxle DriveLayout(const void* vehicle, bool motorcycle) noexcept {
+    if (motorcycle) {
+        return ulw::DrivenAxle::Rear;
+    }
+    const auto* const handling = Read<const void*>(vehicle, 0x384);
+    if (handling) {
+        switch (Read<char>(handling, 0x74)) {
+        case 'F': return ulw::DrivenAxle::Front;
+        case 'R': return ulw::DrivenAxle::Rear;
+        case '4': return ulw::DrivenAxle::Both;
+        }
+    }
+    return ulw::DrivenAxle::Unknown;
+}
+
+ulw::SurfaceContact RoadSurface(unsigned id) noexcept {
+    constexpr unsigned SurfaceCount = 179;
+    if (id >= SurfaceCount) {
+        return {};
+    }
+    const auto flags = SurfaceFlags + id * 0x0Cu;
+    return ulw::ClassifySurface(GameValue<std::uint32_t>(flags), GameValue<std::uint32_t>(flags + 4));
+}
+
+ulw::WheelContact ReadWheelContact(const void* vehicle, int wheel, bool motorcycle,
+    const void* wheelRight, const void* contactSpeed) noexcept {
+    if ((motorcycle && (!s_BikeContacts || wheel < 0 || wheel > 1)) ||
+        (!motorcycle && (!s_CarContacts || wheel < 0 || wheel > 3))) {
+        return {};
+    }
+    const auto index = static_cast<unsigned>(wheel);
+    auto hit = index;
+    if (motorcycle) {
+        hit *= 2;
+        if (Read<float>(vehicle, 0x710 + (hit + 1) * 4) < Read<float>(vehicle, 0x710 + hit * 4)) {
+            ++hit;
+        }
+    }
+    const auto ratio = Read<float>(vehicle, (motorcycle ? 0x710u : 0x7D4u) + hit * 4);
+    if (!(ratio >= 0.0f && ratio < 1.0f)) {
+        return {};
+    }
+    const auto material = Read<std::uint8_t>(vehicle, (motorcycle ? 0x683u : 0x747u) + hit * 0x2C);
+    return {RoadSurface(material), RoadVehicleClass(vehicle, motorcycle), DriveLayout(vehicle, motorcycle),
+        motorcycle ? 4 + wheel : wheel, ratio, Dot(Read<ulw::Point>(vehicle, 0x44), EntityForward(vehicle)),
+        Dot(Read<ulw::Point>(wheelRight), Read<ulw::Point>(contactSpeed)),
+        (Read<std::uint8_t>(vehicle, 0x428) & 0x20) != 0};
+}
+
+ulw::WheelForces TunePlayerWheel(const void* vehicle, ulw::WheelForces forces, int wheel,
+    bool damagedTyre, bool motorcycle, const void* wheelRight, const void* contactSpeed, const void* wheelState) noexcept {
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    if (!TunableRoadVehicle(vehicle, motorcycle, now)) {
         return forces;
     }
     const auto ref = GameFunction<PedReference>(0x54FFC0)(vehicle);
@@ -1871,17 +1947,23 @@ ulw::WheelForces TunePlayerWheel(const void* vehicle, ulw::WheelForces forces, i
     const auto speed = Read<ulw::Point>(vehicle, 0x44);
     const auto wear = motorcycle ? 0.0f : ulw::PanelWearAtWheel(Read<std::uint32_t>(vehicle, 0x5B4), wheel);
     const auto engineDamage = motorcycle ? std::uint8_t{} : Read<std::uint8_t>(vehicle, 0x5A4);
+    const auto contact = ReadWheelContact(vehicle, wheel, motorcycle, wheelRight, contactSpeed);
+    const auto state = Read<unsigned>(wheelState);
+    if (contact.surface.material != ulw::RoadMaterial::Unknown && contact.surface.material != ulw::RoadMaterial::Paved) {
+        ++s_SurfaceResponses;
+    }
     return s_RoadPhysics.Tune(forces, {
         static_cast<std::uint32_t>(ref), now, Read<float>(vehicle, 0x8C), Read<float>(vehicle, 0x4C0),
         GameValue<float>(0xC81308), ulw::DistanceSquared(speed, {}), Read<float>(vehicle, 0x4A0), damagedTyre,
-        Read<float>(vehicle, 0x49C), wear, engineDamage, motorcycle,
+        Read<float>(vehicle, 0x49C), wear, engineDamage, motorcycle, contact, state == 1 || state == 2,
     });
 }
 
 void __fastcall OnWheel(void* car, void*, void* forward, void* right, void* contactSpeed, void* contact,
     int wheels, float thrust, float brake, float grip, std::int8_t wheel, float* wheelSpeed,
     std::int32_t* wheelState, std::uint16_t status) noexcept {
-    const auto forces = TunePlayerWheel(car, {thrust, brake, grip}, wheel, status != 0, false);
+    const auto forces = TunePlayerWheel(car, {thrust, brake, grip}, wheel, status != 0, false,
+        right, contactSpeed, wheelState);
     GameFunction<ProcessWheel>(0x6D6C00)(car, forward, right, contactSpeed, contact, wheels,
         forces.thrust, forces.brake, forces.grip, wheel, wheelSpeed, wheelState, status);
 }
@@ -1889,9 +1971,100 @@ void __fastcall OnWheel(void* car, void*, void* forward, void* right, void* cont
 void __fastcall OnBikeWheel(void* bike, void*, void* forward, void* right, void* contactSpeed, void* contact,
     int wheels, float thrust, float brake, float grip, float destabilize, std::int8_t wheel, float* wheelSpeed,
     std::int32_t* wheelState, std::int32_t special, std::uint16_t status) noexcept {
-    const auto forces = TunePlayerWheel(bike, {thrust, brake, grip}, wheel, status != 0, true);
+    const auto forces = TunePlayerWheel(bike, {thrust, brake, grip}, wheel, status != 0, true,
+        right, contactSpeed, wheelState);
     GameFunction<ProcessBikeWheel>(0x6D73B0)(bike, forward, right, contactSpeed, contact, wheels,
         forces.thrust, forces.brake, forces.grip, destabilize, wheel, wheelSpeed, wheelState, special, status);
+}
+
+bool TunableSuspension(const void* car) noexcept {
+    return TunableRoadVehicle(car, false, GameValue<std::uint32_t>(0xB7CB84)) &&
+        Read<std::uint16_t>(car, 0x22) != 432 && !(Read<std::uint32_t>(car, 0x38C) & 0x00020000u);
+}
+
+ulw::SuspensionSpring PlayerSpring(const void* car, ulw::SuspensionSpring native, float travel, const void* point) noexcept {
+    if (!TunableSuspension(car)) {
+        return native;
+    }
+    const auto adjustment = ulw::TuneSpring(native, RoadVehicleClass(car, false), travel, GameValue<float>(0xC81308),
+        Read<float>(car, 0x4A0), Read<float>(car, 0x49C), Dot(EntityForward(car), Read<ulw::Point>(point)) >= 0.0f);
+    if (adjustment.force != native.force || adjustment.bias != native.bias) {
+        ++s_SpringResponses;
+    }
+    return adjustment;
+}
+
+bool __fastcall OnSpring(void* car, void*, float force, void* direction, void* point, float travel,
+    float bias, float* dampingLimit) noexcept {
+    const auto spring = PlayerSpring(car, {force, bias}, travel, point);
+    return GameFunction<SpringCollision>(0x543C90)(car, spring.force, direction, point, travel, spring.bias, dampingLimit);
+}
+
+bool __fastcall OnSpringAlt(void* car, void*, float force, void* direction, void* point, float travel,
+    float bias, void* normal, float* dampingLimit) noexcept {
+    const auto spring = PlayerSpring(car, {force, bias}, travel, point);
+    return GameFunction<SpringCollisionAlt>(0x543D60)(car, spring.force, direction, point, travel, spring.bias, normal, dampingLimit);
+}
+
+bool __fastcall OnSpringDamping(void* car, void*, float damping, float limit, void* direction, void* point,
+    void* collisionSpeed) noexcept {
+    if (TunableSuspension(car)) {
+        const auto forward = EntityForward(car);
+        const auto offset = Read<ulw::Point>(point);
+        const auto* const matrix = Read<const void*>(car, 0x14);
+        const auto right = matrix ? Read<ulw::Point>(matrix) : ulw::Point{forward.y, -forward.x, 0};
+        const unsigned wheel = (Dot(forward, offset) >= 0.0f ? 0u : 1u) + (Dot(right, offset) >= 0.0f ? 2u : 0u);
+        const auto material = s_CarContacts ? RoadSurface(Read<std::uint8_t>(car, 0x747 + wheel * 0x2C)) : ulw::SurfaceContact{};
+        const auto reaction = ulw::TuneDamping(damping, RoadVehicleClass(car, false), material,
+            Dot(Read<ulw::Point>(direction), Read<ulw::Point>(collisionSpeed)));
+        s_SpringResponses += reaction != damping ? 1u : 0u;
+        damping = reaction;
+    }
+    return GameFunction<SpringDamping>(0x543E90)(car, damping, limit, direction, point, collisionSpeed);
+}
+
+struct TransmissionData {
+    std::array<ulw::GearBand, 6> gears;
+    char drive;
+    char engine;
+    std::uint8_t count;
+    std::byte alignment;
+    std::uint32_t flags;
+    float acceleration;
+    float inertia;
+    float maxVelocity;
+    float maxFlatVelocity;
+    float maxReverse;
+    float velocity;
+};
+static_assert(sizeof(TransmissionData) == 0x68 && offsetof(TransmissionData, velocity) == 0x64);
+
+float __fastcall OnDriveAcceleration(void* transmission, void*, const float* gas, std::uint8_t* gear,
+    float* gearChange, float* velocity, float* inertiaA, float* inertiaB, std::uint8_t grounded, std::uint8_t cheat) noexcept {
+    const auto native = GameFunction<DriveAcceleration>(0x6D05E0);
+    const auto carAddress = reinterpret_cast<std::uintptr_t>(gas) - 0x49C;
+    const auto* const car = reinterpret_cast<const void*>(carAddress);
+    if (!gas || !gear || !grounded || cheat || !(*gas > 0.0f && *gas <= 1.0f) ||
+        reinterpret_cast<std::uintptr_t>(gear) != carAddress + 0x4B4 ||
+        !TunableRoadVehicle(car, false, GameValue<std::uint32_t>(0xB7CB84))) {
+        return native(transmission, gas, gear, gearChange, velocity, inertiaA, inertiaB, grounded, cheat);
+    }
+    const auto type = RoadVehicleClass(car, false);
+    const auto grade = EntityForward(car).z;
+    const auto pedal = ulw::ShapeThrottle(*gas, type, grade);
+    auto adjusted = Read<TransmissionData>(transmission);
+    if (*gear > adjusted.count || adjusted.count == 0 || adjusted.count >= adjusted.gears.size()) {
+        return native(transmission, gas, gear, gearChange, velocity, inertiaA, inertiaB, grounded, cheat);
+    }
+    if (!ulw::TuneShiftBands(adjusted.gears, adjusted.count, type, *gas, grade)) {
+        return native(transmission, &pedal, gear, gearChange, velocity, inertiaA, inertiaB, grounded, cheat);
+    }
+    ++s_DriveResponses;
+    const auto acceleration = native(&adjusted, &pedal, gear, gearChange, velocity, inertiaA, inertiaB, grounded, cheat);
+    // The native routine publishes the sampled velocity to its transmission.
+    // Preserve that output while keeping this car's shift thresholds local.
+    std::memcpy(static_cast<std::byte*>(transmission) + 0x64, &adjusted.velocity, sizeof(adjusted.velocity));
+    return acceleration;
 }
 
 bool CivilianActive(std::uint32_t now) noexcept {
@@ -2257,18 +2430,47 @@ bool InstallCarObservations() noexcept {
         PatchCalls({0x6B51CD, 0x6B52A2}, 0x41DA30, reinterpret_cast<std::uintptr_t>(&OnCarAI));
 }
 
+bool SurfaceLayoutMatches() noexcept {
+    return Matches(0x55E6F7, std::array<std::uint8_t, 7>{0x8B, 0x84, 0x81, 0x94, 0, 0, 0}) &&
+        Matches(0x55E917, std::array<std::uint8_t, 7>{0x8B, 0x84, 0x81, 0x98, 0, 0, 0});
+}
+
 bool InstallPhysics() noexcept {
-    return VehicleQueriesMatch() &&
+    const auto wheels = VehicleQueriesMatch() &&
         Matches(0x6D6C00, Entry{0x83, 0xEC, 0x48, 0xD9, 0x05, 0x50, 0x8B, 0x85}) &&
         PatchCalls({0x6A567B, 0x6A56E9, 0x6A5B49, 0x6A5BB7}, 0x6D6C00,
             reinterpret_cast<std::uintptr_t>(&OnWheel));
+    s_CarContacts = wheels && SurfaceLayoutMatches() &&
+        Matches(0x6A54D7, std::array<std::uint8_t, 7>{0x8D, 0x8C, 0x01, 0x24, 0x07, 0, 0});
+    return wheels;
 }
 
 bool InstallMotorcyclePhysics() noexcept {
-    return VehicleQueriesMatch() &&
+    const auto wheels = VehicleQueriesMatch() &&
         Matches(0x6B9250, Entry{0x6A, 0xFF, 0x68, 0xEB, 0x82, 0x84, 0x00, 0x64}) &&
         Matches(0x6D73B0, Entry{0x83, 0xEC, 0x40, 0xD9, 0x05, 0x50, 0x8B, 0x85}) &&
         PatchCalls({0x6BAF3D, 0x6BB4C1, 0x6BB855}, 0x6D73B0, reinterpret_cast<std::uintptr_t>(&OnBikeWheel));
+    s_BikeContacts = wheels && SurfaceLayoutMatches() &&
+        Matches(0x6BAB0C, Entry{0x0F, 0xB6, 0x8C, 0x30, 0x83, 0x06, 0, 0}) &&
+        Matches(0x6BA8AE, std::array<std::uint8_t, 6>{0xD9, 0x86, 0x10, 0x07, 0, 0});
+    return wheels;
+}
+
+void InstallRoadDynamics() noexcept {
+    const bool springs = Matches(0x543C90, Entry{0xD9, 0x05, 0x24, 0x86, 0x85, 0, 0x83, 0xEC}) &&
+        PatchCalls({0x6B007D}, 0x543C90, reinterpret_cast<std::uintptr_t>(&OnSpring));
+    const bool alternate = Matches(0x543D60, Entry{0xD9, 0x05, 0x24, 0x86, 0x85, 0, 0x83, 0xEC}) &&
+        PatchCalls({0x6B004D}, 0x543D60, reinterpret_cast<std::uintptr_t>(&OnSpringAlt));
+    const bool damping = Matches(0x543E90, Entry{0x83, 0xEC, 0x28, 0x8B, 0x44, 0x24, 0x3C, 0xD9}) &&
+        PatchCalls({0x6B027F}, 0x543E90, reinterpret_cast<std::uintptr_t>(&OnSpringDamping));
+    const bool drive = Matches(0x6D05E0, Entry{0x8B, 0x44, 0x24, 0x10, 0x8B, 0x10, 0x89, 0x15}) &&
+        Matches(0x6B27EA, std::array<std::uint8_t, 10>{0x8D, 0x96, 0x9C, 0x04, 0, 0, 0x52, 0x8D, 0x48, 0x2C}) &&
+        PatchCalls({0x6B27F4}, 0x6D05E0, reinterpret_cast<std::uintptr_t>(&OnDriveAcceleration));
+    Log(s_CarContacts ? "Installed: automobile surface contact and tyre temperature." : "Skipped: automobile contact layout differs.");
+    Log(s_BikeContacts ? "Installed: motorcycle surface contact and tyre temperature." : "Skipped: motorcycle contact layout differs.");
+    Log(springs && alternate && damping ? "Installed: progressive suspension and weight transfer."
+        : "Suspension: one or more native force call sites differ.");
+    Log(drive ? "Installed: class-specific throttle and shift points." : "Skipped: transmission call site differs.");
 }
 
 void InstallCombat() noexcept {
@@ -2380,7 +2582,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.15.0");
+    Log("Ultimate Living World 0.16.0");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");
@@ -2429,6 +2631,7 @@ void Install(const std::filesystem::path& config) noexcept {
     if (GetPrivateProfileIntW(L"Modules", L"VehiclePhysics", 1, config.c_str())) {
         Log(InstallPhysics() ? "Installed: automobile grip, damage and heat." : "Skipped: automobile wheel call sites differ.");
         Log(InstallMotorcyclePhysics() ? "Installed: motorcycle grip and heat." : "Skipped: motorcycle wheel call sites differ.");
+        InstallRoadDynamics();
     }
     if (GetPrivateProfileIntW(L"Modules", L"Combat", 1, config.c_str())) {
         InstallCombat();

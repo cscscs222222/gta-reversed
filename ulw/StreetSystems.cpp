@@ -865,6 +865,12 @@ WheelForces RoadPhysics::Tune(WheelForces forces, const RoadConditions& conditio
     forces.brake *= 1.0f - heat.brakeHeat * (0.075f + 0.055f * heavy) - 0.07f * wear - 0.06f * panel;
     const auto overheat = Unit((heat.engineHeat - 0.48f) / 0.52f);
     forces.thrust *= 1.0f - 0.20f * damage - 0.26f * overheat;
+    if (conditions.contact.wheel >= 0 && conditions.contact.wheel < static_cast<int>(heat.tyres.size())) {
+        auto& tyre = heat.tyres[static_cast<unsigned>(conditions.contact.wheel)];
+        const auto temperature = UpdateTyreTemperature(tyre, conditions.now, conditions.contact, wet, conditions.tyreSliding);
+        forces = DynamicWheelResponse(forces, conditions.contact, wet, conditions.throttle, conditions.brakePedal,
+            temperature, conditions.burstTyre);
+    }
     return forces;
 }
 

@@ -1,4 +1,4 @@
-# Ultimate Living World 0.15.0
+# Ultimate Living World 0.16.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
@@ -10,7 +10,7 @@ Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 | Barikatlar | Oyunun dinamik barikat adayları yol genişliği, araç hızı, takip bilgisi ve kamera görüşüne göre elenir. Oyun yol geometrisini ve barikat araçlarını kendi yönetir. |
 | Trafik | Sürücüler profil ve araç tipine göre farklı takip mesafesi bırakabilir. Yaklaşan dönüş ve sinyaller uygun yollarda hızı etkiler. Duran kuyruklarda tekrarlanan araç kornaları seyrekleşir. Sivil trafik yağmur, sis, kazalar ve sirenli araçlara tepki verir. |
 | Acil servis | Ambulans ve itfaiye ekipleri, oyun tarafından belirlenen olay yerine yaklaşırken hızlarını daha erken düşürür. Islak zeminde ve siste fren daha erken başlar. Oyunun rota ve ekip görevleri kullanılır. |
-| Araç fiziği | Oyuncunun serbest dolaşımda kullandığı otomobil ve motosikletlerin tutuşu, frenleri ve çekişi yol ve hasar durumuna göre değişir. Düşük hızda uzun süre tam gaz kalan hasarlı motor daha çabuk ısınır ve geçici güç kaybeder. Otomobilin hasarlı çamurluğu veya tamponu yakınındaki tekerlekleri etkiler. |
+| Araç fiziği | Otomobil ve motosikletlerin her tekerleği temas ettiği yüzeye, yağmura, kaymaya ve lastik sıcaklığına göre farklı tepki verir. Otomobillerde süspansiyon sert sıkışmalara ve geri sekmeye uyarlanır. Gaz tepkisi ve vites geçiş noktaları sınıfa, gaza ve eğime göre değişir. Bölgesel hasar, motor ısısı ve fren yorgunluğu da sürüşü etkiler. |
 | Çatışma | Art arda vurulan silahlı polis ve çete üyeleri kısa serilere geçer, uygun siper arar ve güvenli bir noktaya ulaşınca kısa süre bekler. Cephane azalırsa veya silah şarjör değiştiriyorsa bekleme uzayabilir. Bir yanda ateş hattı açılırsa NPC o tarafa ilerleyebilir. Ağır yaralanan veya cephanesi tükenen NPC uygun bir yoldan kısa süre geri çekilebilir. |
 | Şehir | Trafik ve yaya yoğunluğu saate, güne, bölgeye ve havaya göre değişir. Uygun yayalar sabah duraklara, öğle saatinde yiyecek noktalarına, akşam bank veya merdivenlere, yağmurda sığınaklara yürüyebilir. Oyunun mevcut etkileşim noktaları ve sıra sistemi kullanılır. |
 | Görevler | ULW görev işaretlerini ve motorun çalışan görev betiğini izler. Görevlerde, ara sahnelerde ve görev sonu toparlanma sırasında yeni dünya davranışlarını askıya alır. |
@@ -45,6 +45,8 @@ Yeni yaya davranışını görmek için serbest dolaşımda yakındaki bir sivil
 Şehir rutinlerini denemek için hafta içi sabah bir durağın yakınında yayaları izle. Öğle saatinde yiyecek tezgâhlarında, yağmurda kapalı bekleme noktalarında aynı karşılaştırmayı yap. `scheduledVisits` başlatılan ziyaretleri kaydeder. Ağır bir kazadan sonra `crashWaits`, `crashDepartures` ve `crashCalls` sayaçları duraklama, uzaklaşma ve tamamlanan telefon çağrılarını gösterir. Telefon ihbarı devriye incelemesine eklenir.
 
 Araçları denemek için serbest dolaşımda aynı motosikletle kuru ve ıslak yolda fren yap. Hasarlı bir otomobilde düşük hızda uzun süre gaz verdikten sonra hızlanmayı dene. Ardından gazı azaltıp motorun soğumasını bekle. Windows testleri ısınma, soğuma, tamir sonrası sıfırlama ve bölgesel hasar hesaplarını kapsar.
+
+Yeni yol tepkilerini karşılaştırmak için aynı aracı asfalt, çim ve kumda sür. Ardından bir spor otomobil ve kamyonla aynı eğimde yarım gazdan tam gaza geç. `surfaceResponses`, `springResponses` ve `driveResponses` sırasıyla zemin, süspansiyon ve şanzıman kararlarının işlendiği çağrıları sayar. Bu davranışlar serbest dolaşımda oyuncunun kullandığı araçlara uygulanır.
 
 Ambulans veya itfaiye serbest dolaşımda bir olaya gelirken yavaşlamasını ve çevredeki trafiği gözle. `emergencyApproaches` olay yerine yaklaşırken değiştirilen gaz ve fren kararlarını, `emergencyYieldCalls` ise acil aracın etkisiyle düşürülen sivil hız sınırlarını sayar. `Emergency=0` acil ekiplerin yaklaşma davranışını, `Traffic=0` sivil araçlara uygulanan hız sınırlarını kapatır.
 

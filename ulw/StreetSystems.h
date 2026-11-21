@@ -1,6 +1,7 @@
 #pragma once
 
 #include "IntelligenceCore.h"
+#include "VehicleDynamics.h"
 
 #include <optional>
 
@@ -325,12 +326,6 @@ private:
     unsigned m_CoverSearches{};
 };
 
-struct WheelForces {
-    float thrust;
-    float brake;
-    float grip;
-};
-
 float PanelWearAtWheel(std::uint32_t panels, int wheel) noexcept;
 
 struct RoadConditions {
@@ -346,6 +341,8 @@ struct RoadConditions {
     float panelWear{};
     std::uint8_t engineDamage{};
     bool motorcycle{};
+    WheelContact contact{};
+    bool tyreSliding{};
 };
 
 class RoadPhysics {
@@ -361,6 +358,7 @@ private:
         float engineHeat{};
         float lastHealth{};
         bool occupied{};
+        std::array<TyreTemperature, 6> tyres{};
     };
     std::array<VehicleHeat, 8> m_Heat{};
 };
