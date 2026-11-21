@@ -1,11 +1,11 @@
-# Ultimate Living World 0.13.0
+# Ultimate Living World 0.14.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
 | Sistem | Bu paketteki değişiklik |
 | --- | --- |
 | Siviller | Silah sesi, yangın ve yakındaki kazalar farklı tepkiler doğurur. Ağır kazanın görüş hattında kalan yaya enkaza bakabilir. Oyun, kazaya doğru giden kısa bir yaya rotasında alternatif yol arar. |
-| Polis | Yaya ve araç ekipleri son görüş konumunu paylaşabilir. Üç yıldızdan itibaren uygun bir araç takibinde öncü araç takibi sürdürürken ikinci araç görülen hareket yönü üzerinden yol kesmeye çalışabilir. Polis sürücüleri yakın takipte yaklaşma hızına göre fren yapabilir. |
+| Polis | Yaya ve araç ekipleri son görüş konumunu paylaşabilir. Silah sesi ve tanıklar bir olay yeri ihbarı oluşturabilir. Aranma seviyesi yokken devriyeler doğrudan gördükleri tehlikeli sürüşe uyarı verebilir ve kısa süre gözlemleyebilir. Düşük aranma seviyesinde oyuncu teslim olabilir. Üç yıldızdan itibaren ikinci ekip, görülen hareket yönüne göre yol kesme rotası seçebilir. |
 | Hava desteği | Serbest dolaşımda polis helikopteri görüş bilgisini devriyelerle paylaşır. Görüş kesilince son bildirilen bölgeyi tarar. Gece projektörü tarama konumuna yönelir. |
 | Barikatlar | Oyunun dinamik barikat adayları yol genişliği, araç hızı, takip bilgisi ve kamera görüşüne göre elenir. Oyun yol geometrisini ve barikat araçlarını kendi yönetir. |
 | Trafik | Sürücüler profil ve araç tipine göre farklı takip mesafesi bırakabilir. Yaklaşan dönüş ve sinyaller uygun yollarda hızı etkiler. Duran kuyruklarda tekrarlanan araç kornaları seyrekleşir. Sivil trafik yağmur, sis, kazalar ve sirenli araçlara tepki verir. |
@@ -48,6 +48,8 @@ Ambulans veya itfaiye serbest dolaşımda bir olaya gelirken yavaşlamasını ve
 
 Trafiği denemek için yağmurda viraja yaklaşan ağır araçları ve bir ışıkta durup yeniden hareket eden kuyruğu izle. `bendLimits`, `followingLimits` ve `queueHornSkips` sayaçları yeni kararları gösterir. Polis takibini denemek için serbest dolaşımda üç yıldızla açık bir yolda birden fazla devriye aracının seni gördüğü bir kovalamacaya gir. `interceptRoutes` yol kesme rotalarını, `patrolBraking` daha fazla takip mesafesi bırakılan kararları sayar.
 
+Teslim olmayı denemek için serbest dolaşımda bir veya iki yıldızdayken araçtan in, yumruğu seç ve hareketsiz dur. Peşindeki bir polis yakındayken **F9** tuşunu basılı tut. Polis yaklaşınca oyun kendi tutuklama akışını kullanır. `voluntaryArrests` başlatılan tutuklamaları, `policeReports`, `drivingWarnings` ve `investigationRoutes` devriye kararlarını gösterir. Silah sesi duyulduğunda polis yaklaşık olay yerini, görgü tanığı olduğunda gecikmeli olarak görülen olay yerini kullanabilir. Aranma yıldızlarını oyunun mevcut suç sistemi yönetir.
+
 Çatışma değişikliklerini denemek için serbest dolaşımda bir bölge savaşında AK-47 veya Micro Uzi taşıyan bir düşmanla karşılaş. Düşmanın ilk atış serilerini ve peş peşe iki isabetten sonraki serilerini karşılaştır. Günlükte `extendedBursts` uzatılan serileri, `shorterBursts` kısaltılanları ve `suppressionHits` baskıyı başlatan veya uzatan isabetleri sayar. `Combat=0` bu davranışları ve isabet ayarını kapatır.
 
 Siper aramayı denemek için dış mekânda duvar köşesi veya duran bir aracın yakınında, yaklaşık 10–20 metre uzaktaki silahlı bir düşmana onu öldürmeden iki kez isabet ettir. `coverSearches` yapılan aramaları, `coverMoves` ise hareket görevi verilen NPC'leri sayar. Bu sürüm oyunun mevcut siper noktalarını kullanır. Hareketin sahada nasıl göründüğünün doğrulanması için oyun testi gerekir.
@@ -60,4 +62,4 @@ Günlük oyun zamanı ilerledikçe NPC kaçışı, devriye rotaları, hava arama
 
 `build.cmd` var olan MSVC x86 ortamını kullanır ve paketi `bin/ulw/dist` altında üretir. GitHub Actions’taki **Build** iş akışı aynı adımları çalıştırır. Başarılı çalışmanın **Artifacts** bölümünde **UltimateLivingWorld** paketi çıkar. Arşivde ASI, INI, doğrulama betiği ve bu kılavuz bulunur.
 
-Belirli iş ve ev adreslerine giden bireysel NPC rotaları, yeni şehir etkinlikleri, ekonomi, ayrıntılı yakalama taktikleri, diğer taşıtların fiziği ve Chaos Missions görevlerinin oyun içi uyumluluk testleri tam sürüm için bekliyor.
+Belirli iş ve ev adreslerine giden bireysel NPC rotaları, yeni şehir etkinlikleri, ekonomi, diğer taşıtların fiziği ve Chaos Missions görevlerinin oyun içi uyumluluk testleri tam sürüm için bekliyor.

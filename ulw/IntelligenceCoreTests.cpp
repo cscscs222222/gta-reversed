@@ -3,6 +3,7 @@
 
 #include "IntelligenceCore.h"
 #include "MissionState.h"
+#include "PoliceInteractions.h"
 #include "StreetSystems.h"
 
 #include <cstdio>
@@ -166,6 +167,63 @@ void TestPatrolTeam() {
     Check(ulw::PatrolFollowing(pedals, 6, {0, 8, 0}, {0, 1, 0}, {0, 0.27f, 0}, {0, 0.06f, 0}, 0).brake == pedals.brake &&
         ulw::PatrolFollowing(pedals, 2, {6, 8, 0}, {0, 1, 0}, {0, 0.27f, 0}, {0, 0.06f, 0}, 0).brake == pedals.brake,
         "army response and vehicles in another lane must keep native controls");
+}
+
+void TestPoliceInteractions() {
+    using ulw::IncidentKind;
+    constexpr ulw::Point corner{9, 10, 1};
+    constexpr ulw::Point hood{13, 11, 1};
+    ulw::PoliceIncidents incidents;
+    Check(incidents.Record(IncidentKind::Witness, 0x101, corner, 1000, true) &&
+        !incidents.Record(IncidentKind::Witness, 0x201, corner, 1050, true), "duplicate witness reports must coalesce");
+    const auto witness = incidents.Nearby(hood, 1870, true);
+    Check(!incidents.Nearby(hood, 1869, true) && witness && witness->kind == IncidentKind::Witness,
+        "a civilian sighting should reach the police only after the reporting delay");
+    Check(!incidents.Nearby({65, 65, 1}, 1900, true) && !incidents.Nearby({12, 10, 8}, 1900, true) &&
+        !incidents.Nearby(hood, 7300, true), "reports must expire and stay local to their level");
+    Check(incidents.Record(IncidentKind::GunshotSound, 0x201, corner, 7500, false) &&
+        !incidents.Nearby(hood, 7501, true), "an unknown source must not replace a player sighting");
+    const auto sound = incidents.Nearby(hood, 7501, false);
+    Check(sound && sound->point.x == 7 && sound->point.y == 7, "heard shots supply coarse coordinates");
+    Check(incidents.Record(IncidentKind::OfficerSight, 0x301, corner, 7700, true), "direct sighting must be recorded");
+    const auto sight = incidents.Nearby(hood, 7701, false);
+    Check(sight && sight->kind == IncidentKind::OfficerSight, "direct observation should win near a noisy event");
+    for (unsigned i = 1; i <= 4; ++i) {
+        Check(incidents.TakeProbe(i << 8, 8000, 10), "early observers should receive the frame budget");
+    }
+    Check(!incidents.TakeProbe(0x501, 8000, 10) && !incidents.TakeProbe(0x100, 8230, 11) &&
+        incidents.TakeProbe(0x501, 8230, 11), "frame and actor sample limits should remain independent");
+    incidents.Reset();
+    Check(!incidents.Nearby(hood, 8200, false), "free-roam transitions must clear incident reports");
+
+    Check(ulw::DrivingEvidence(0.2f * 0.2f, false) == 0 && ulw::DrivingEvidence(0.4f * 0.4f, false) == 1 &&
+        ulw::DrivingEvidence(0.49f * 0.49f, false) == 2 && ulw::DrivingEvidence(0.3f * 0.3f, true) == 2,
+        "driving warnings should distinguish clean, fast and collision behavior");
+    ulw::DrivingSuspicion suspicion;
+    constexpr auto cruiser = 0x601u;
+    Check(!suspicion.Observe(cruiser, 1000, corner, 2) &&
+        suspicion.Observe(cruiser, 1400, corner, 2) &&
+        !suspicion.Follow(cruiser, 1401), "a warning should come before pursuit-like attention");
+    Check(!suspicion.Observe(cruiser, 1800, hood, 2), "a patrol must respect the warning cooldown");
+    const auto follow = suspicion.Follow(cruiser, 1801);
+    Check(follow && follow->x == hood.x && !suspicion.Follow(0x602, 1801),
+        "continued danger should store only the last observed location for the same patrol");
+    Check(!suspicion.Observe(cruiser, 2200, corner, 0) && !suspicion.Follow(cruiser, 2201),
+        "slowing down or losing sight should drop the brief follow decision");
+    Check(!suspicion.Observe(cruiser, 2600, hood, 4) && !suspicion.Follow(cruiser, 5000),
+        "warned patrols should respect the cooldown and forget stale locations");
+
+    ulw::SurrenderInput surrender;
+    Check(!surrender.Update(1000, true, false) && !surrender.Update(1100, true, true) &&
+        !surrender.Update(1420, true, true) && !surrender.Update(1730, true, true) &&
+        surrender.Update(1800, true, true), "holding surrender must require continuous eligible input");
+    Check(surrender.Claim(cruiser, 1801) && !surrender.Claim(0x701, 1850),
+        "only one pursuing officer should own the surrender approach");
+    surrender.Commit();
+    Check(!surrender.Update(1900, true, true) && !surrender.Claim(cruiser, 1900) &&
+        !surrender.Update(2000, false, true), "committed or released input must not repeat the arrest");
+    Check(!surrender.Update(2200, true, true) && !surrender.Update(3000, true, true),
+        "a long interruption must restart the surrender timer");
 }
 
 void TestCrashScenes() {
@@ -709,6 +767,8 @@ int wmain(int argc, wchar_t** argv) {
         TestPoliceSearch();
         TestPatrolTeam();
         std::puts("Patrols: observed motion, interception roles, sight loss, role expiry and following gaps passed.");
+        TestPoliceInteractions();
+        std::puts("Police interactions: delayed witnesses, evidence range, warnings and voluntary arrest input passed.");
         TestCrashScenes();
         TestPedestrianRoutines();
         TestTrafficAndPhysics();
