@@ -88,10 +88,30 @@ struct TrafficInput {
     unsigned hour;
     std::uint32_t seed;
     bool recentCollision;
-    bool sirenApproaching;
+    float emergencyScale{1.0f};
     bool crashAhead{};
 };
 float TrafficLimit(const TrafficInput& input) noexcept;
+
+enum class EmergencyState : std::uint8_t { Inactive, Responding, OnScene };
+
+struct EmergencyUnit {
+    Point position{};
+    Point velocity{};
+    std::uint32_t vehicle{};
+    std::uint32_t observedAt{};
+    EmergencyState state{};
+};
+
+float EmergencyYieldScale(Point position, Point forward, Point velocity, std::uint32_t now,
+    const EmergencyUnit& unit) noexcept;
+
+struct DrivePedals {
+    float gas;
+    float brake;
+};
+
+DrivePedals EmergencyApproach(DrivePedals native, float distanceSquared, float speedSquared, float wet, float fog) noexcept;
 
 struct CrashObservation {
     std::uint32_t vehicle;

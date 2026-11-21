@@ -192,13 +192,87 @@ float TrafficLimit(const TrafficInput& input) noexcept {
     if (input.recentCollision) {
         cap *= 0.68f;
     }
-    if (input.sirenApproaching) {
-        cap *= 0.74f;
+    if (std::isfinite(input.emergencyScale)) {
+        cap *= std::clamp(input.emergencyScale, 0.48f, 1.0f);
     }
     if (input.crashAhead) {
         cap *= 0.58f;
     }
     return std::min(input.nativeLimit, cap);
+}
+
+float EmergencyYieldScale(Point position, Point forward, Point velocity, std::uint32_t now,
+    const EmergencyUnit& unit) noexcept {
+    if (unit.state == EmergencyState::Inactive || std::abs(position.z - unit.position.z) > 3.25f) {
+        return 1.0f;
+    }
+    const auto x = position.x - unit.position.x;
+    const auto y = position.y - unit.position.y;
+    const auto distanceSquared = x * x + y * y;
+    const auto age = now - unit.observedAt;
+    if (unit.state == EmergencyState::OnScene) {
+        const auto ahead = -x * forward.x - y * forward.y;
+        const auto lateral = x * forward.y - y * forward.x;
+        if (age < 2000 && ahead > 1.0f && ahead < 23.0f && std::abs(lateral) <= 6.5f) {
+            return 0.56f + 0.28f * Unit(ahead / 23.0f);
+        }
+        return 1.0f;
+    }
+
+    const auto unitSpeedSq = unit.velocity.x * unit.velocity.x + unit.velocity.y * unit.velocity.y;
+    if (!(unitSpeedSq >= 0.075f * 0.075f && distanceSquared <= 58.0f * 58.0f) || age >= 900) {
+        return 1.0f;
+    }
+    const auto unitSpeed = std::sqrt(unitSpeedSq);
+    const auto fx = unit.velocity.x / unitSpeed;
+    const auto fy = unit.velocity.y / unitSpeed;
+    const auto ahead = x * fx + y * fy;
+    if (ahead <= 2.5f) {
+        return 1.0f;
+    }
+    const auto lateral = x * fy - y * fx;
+    const auto alignment = fx * forward.x + fy * forward.y;
+    if (alignment > 0.72f && std::abs(lateral) < 5.0f) {
+        const auto closingSpeed = unitSpeed - (velocity.x * fx + velocity.y * fy);
+        const auto range = std::min(54.0f, 27.0f + unitSpeed * 34.0f);
+        if (closingSpeed >= 0.035f && ahead <= range) {
+            return 0.69f + 0.23f * Unit(ahead / range);
+        }
+        return 1.0f;
+    }
+
+    // Compare where the vehicles will be on their current courses.
+    const auto rx = velocity.x - unit.velocity.x;
+    const auto ry = velocity.y - unit.velocity.y;
+    const auto relativeSpeedSq = rx * rx + ry * ry;
+    if (!(relativeSpeedSq > 0.015f) || std::abs(lateral) > 18.0f) {
+        return 1.0f;
+    }
+    const auto timeToPass = -(x * rx + y * ry) / relativeSpeedSq;
+    const auto missX = x + rx * timeToPass;
+    const auto missY = y + ry * timeToPass;
+    if (timeToPass >= 0.0f && timeToPass <= 65.0f && missX * missX + missY * missY < 5.0f * 5.0f) {
+        return 0.53f + 0.27f * Unit(timeToPass / 65.0f);
+    }
+    return 1.0f;
+}
+
+DrivePedals EmergencyApproach(DrivePedals native, float distanceSquared, float speedSquared, float wet, float fog) noexcept {
+    if (!(distanceSquared >= 0.0f && distanceSquared <= 64.0f * 64.0f) || !std::isfinite(speedSquared) ||
+        speedSquared < 0.0f || !(native.gas >= 0.0f && native.gas <= 1.0f) ||
+        !(native.brake >= 0.0f && native.brake <= 1.0f)) {
+        return native;
+    }
+    const auto distance = std::sqrt(distanceSquared);
+    const auto weather = 1.0f - 0.22f * Unit(wet) - 0.13f * Unit(fog);
+    const auto targetSpeed = (0.105f + 0.006f * distance) * weather;
+    const auto speed = std::sqrt(speedSquared);
+    if (speed <= targetSpeed) {
+        return native;
+    }
+    const auto excess = Unit((speed - targetSpeed) / 0.38f);
+    const auto brake = std::min(0.64f, 0.12f + 0.57f * excess);
+    return {native.gas * (1.0f - excess), std::max(native.brake, brake)};
 }
 
 void CrashScenes::Observe(const CrashObservation& crash) noexcept {

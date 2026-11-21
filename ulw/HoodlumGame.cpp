@@ -52,6 +52,7 @@ using FleePoint = void*(__thiscall*)(void*, const ulw::Point&, bool, float, int)
 using SeekPoint = ulw::Point*(__thiscall*)(void*, ulw::Point*, const void*);
 using WantedPointer = const void*(__cdecl*)(int);
 using TrafficSpeed = float(__cdecl*)(void*);
+using MissionSteering = void(__cdecl*)(void*, float*, float*, float*, bool*);
 using CarAI = void(__cdecl*)(void*);
 using FlyHelicopter = void(__cdecl*)(void*, float, float, bool);
 using HeadingForOffset = float(__cdecl*)(float, float);
@@ -82,14 +83,7 @@ ulw::RoadblockAttempts s_Roadblocks{};
 ulw::CrashScenes s_Crashes{};
 ulw::CrashWitnesses s_CrashWitnesses{};
 ulw::RoadPhysics s_RoadPhysics{};
-struct EmergencyCar {
-    ulw::Point position;
-    ulw::Point forward;
-    std::uint32_t ref;
-    std::uint32_t heardAt;
-    bool active;
-};
-std::array<EmergencyCar, 16> s_Sirens{};
+std::array<ulw::EmergencyUnit, 16> s_EmergencyUnits{};
 struct AirObservation {
     std::uint32_t id{};
     std::uint32_t at{};
@@ -109,6 +103,7 @@ unsigned s_AirSearches{};
 unsigned s_RoadblockAttempts{};
 unsigned s_CrashGlances{};
 unsigned s_CrashReroutes{};
+unsigned s_EmergencyApproaches{};
 unsigned s_AllocationFailures{};
 std::uint32_t s_LastLogTime{};
 std::uint32_t s_LastGameTime{};
@@ -158,15 +153,15 @@ void LogActivity(std::uint32_t now) noexcept {
         return;
     }
     using ulw::SearchPhase;
-    char message[384]{};
+    char message[416]{};
     std::snprintf(message, sizeof(message),
-        "Look=%u Flee=%u Panic=%u taskPoolFailures=%u pursuitUpdates=%u reportUpdates=%u searchUpdates=%u patrolRoutes=%u airSearches=%u roadblockAttempts=%u limitedSpeedCalls=%u sirenSpeedCalls=%u crashSpeedCalls=%u attractorUses=%u crashGlances=%u crashReroutes=%u",
+        "Look=%u Flee=%u Panic=%u taskPoolFailures=%u pursuitUpdates=%u reportUpdates=%u searchUpdates=%u patrolRoutes=%u airSearches=%u roadblockAttempts=%u limitedSpeedCalls=%u emergencyYieldCalls=%u crashSpeedCalls=%u attractorUses=%u crashGlances=%u crashReroutes=%u emergencyApproaches=%u",
         s_Reactions[1], s_Reactions[2], s_Reactions[3], s_AllocationFailures,
         s_SearchStages[static_cast<unsigned>(SearchPhase::Pursue)],
         s_SearchStages[static_cast<unsigned>(SearchPhase::Respond)],
         s_SearchStages[static_cast<unsigned>(SearchPhase::Search)],
         s_PatrolRoutes, s_AirSearches, s_RoadblockAttempts, s_RestrictedDrivers, s_YieldingDrivers, s_CrashSlowdowns,
-        s_AttractorUses, s_CrashGlances, s_CrashReroutes);
+        s_AttractorUses, s_CrashGlances, s_CrashReroutes, s_EmergencyApproaches);
     Log(message);
     s_LastLogTime = now;
 }
@@ -240,7 +235,7 @@ void ClearStreetMemory() noexcept {
     s_RoadPhysics.Reset();
     s_Crashes.Reset();
     s_CrashWitnesses.Reset();
-    s_Sirens = {};
+    s_EmergencyUnits = {};
 }
 
 bool StreetActive(std::uint32_t now) noexcept {
@@ -782,15 +777,19 @@ bool __cdecl OnRoadblockNode(std::uint32_t address, float* width, ulw::Point* cr
     return true;
 }
 
+bool HasServiceDestination(std::uint8_t mission) noexcept {
+    return mission == 8 || mission == 9 || mission == 12 || mission == 13;
+}
+
 void __cdecl OnCarAI(void* car) noexcept {
     GameFunction<CarAI>(0x41DA30)(car);
     const auto now = GameValue<std::uint32_t>(0xB7CB84);
     if (!StreetActive(now) || !IsRoadCar(car) || !GameValue<void*>(VehiclePool)) {
         return;
     }
-    const bool emergency = (Read<std::uint8_t>(car, 0x428) & 7) != 0;
+    const auto emergencyFlags = Read<std::uint8_t>(car, 0x428) & 7;
     const bool ambient = Read<std::uint8_t>(car, 0x4A4) == 1;
-    if (!ambient && !emergency) {
+    if (!ambient && !emergencyFlags) {
         return;
     }
     const auto ref = GameFunction<PedReference>(0x54FFC0)(car);
@@ -802,34 +801,67 @@ void __cdecl OnCarAI(void* car) noexcept {
         s_Crashes.Observe({key, now, Read<std::uint32_t>(car, 0x3C), EntityPosition(car),
             ulw::DistanceSquared(Read<ulw::Point>(car, 0x44), {}), Read<float>(car, 0xD8)});
     }
-    if (!emergency) {
-        return;
-    }
-    auto& entry = s_Sirens[(key >> 8) % s_Sirens.size()];
-    if (!(Read<std::uint8_t>(car, 0x42D) & 0x80) || !Read<const void*>(car, 0x460)) {
-        if (entry.ref == key) {
-            entry.active = false;
+    auto& entry = s_EmergencyUnits[(key >> 8) % s_EmergencyUnits.size()];
+    if (!emergencyFlags || Read<std::uint8_t>(car, 0x4A4) == 2) {
+        if (entry.vehicle == key) {
+            entry = {};
         }
         return;
     }
-    entry = {EntityPosition(car), EntityForward(car), key, now, true};
+    const auto mission = Read<std::uint8_t>(car, 0x3BA);
+    const auto position = EntityPosition(car);
+    const auto velocity = Read<ulw::Point>(car, 0x44);
+    const auto status = Read<std::uint8_t>(car, 0x36) >> 3;
+    const bool onDuty = (emergencyFlags & 6) != 0;
+    const bool stationary = velocity.x * velocity.x + velocity.y * velocity.y <= 0.085f * 0.085f;
+    const bool stoppedAtDestination = HasServiceDestination(mission) &&
+        ulw::DistanceSquared(position, Read<ulw::Point>(car, 0x3EC)) <= 24.0f * 24.0f;
+    if (onDuty && status != 5 && stationary && (mission == 0 || mission == 10 || stoppedAtDestination)) {
+        entry = {position, velocity, key, now, ulw::EmergencyState::OnScene};
+    } else if ((Read<std::uint8_t>(car, 0x42D) & 0x80) && Read<const void*>(car, 0x460)) {
+        entry = {position, velocity, key, now, ulw::EmergencyState::Responding};
+    } else if (entry.vehicle == key) {
+        entry = {};
+    }
 }
 
-bool ApproachingSiren(ulw::Point position, ulw::Point forward, std::uint32_t now) noexcept {
-    for (const auto& siren : s_Sirens) {
-        if (!siren.active || now - siren.heardAt > 700 || std::abs(position.z - siren.position.z) > 3.0f) {
-            continue;
-        }
-        const auto dx = position.x - siren.position.x;
-        const auto dy = position.y - siren.position.y;
-        const auto inFront = siren.forward.x * dx + siren.forward.y * dy;
-        const auto lateral = siren.forward.x * dy - siren.forward.y * dx;
-        if (inFront > 4.0f && inFront < 27.0f && std::abs(lateral) < 4.5f &&
-            forward.x * siren.forward.x + forward.y * siren.forward.y > 0.75f) {
-            return true;
-        }
+float YieldSpeedScale(ulw::Point position, ulw::Point forward, ulw::Point velocity, std::uint32_t now) noexcept {
+    auto scale = 1.0f;
+    for (const auto& unit : s_EmergencyUnits) {
+        scale = std::min(scale, ulw::EmergencyYieldScale(position, forward, velocity, now, unit));
     }
-    return false;
+    return scale;
+}
+
+void __cdecl OnServiceApproach(void* car, float* steer, float* gas, float* brake, bool* handbrake) noexcept {
+    GameFunction<MissionSteering>(0x436A90)(car, steer, gas, brake, handbrake);
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    if (!StreetActive(now) || !IsRoadCar(car) || Read<std::uint8_t>(car, 0x4A4) == 2 ||
+        !(Read<std::uint8_t>(car, 0x428) & 6) || !HasServiceDestination(Read<std::uint8_t>(car, 0x3BA)) ||
+        *handbrake) {
+        return;
+    }
+    const auto* const driver = Read<const void*>(car, 0x460);
+    const auto driverType = driver ? Read<std::uint32_t>(driver, 0x598) : 0;
+    if (driverType != 18 && driverType != 19) {
+        return;
+    }
+    const auto target = Read<ulw::Point>(car, 0x3EC);
+    const auto position = EntityPosition(car);
+    const auto dx = target.x - position.x;
+    const auto dy = target.y - position.y;
+    const auto motion = Read<ulw::Point>(car, 0x44);
+    if (std::abs(target.z - position.z) > 6.5f || dx * motion.x + dy * motion.y <= 0) {
+        return;
+    }
+    const auto adjusted = ulw::EmergencyApproach({*gas, *brake}, dx * dx + dy * dy,
+        motion.x * motion.x + motion.y * motion.y, GameValue<float>(0xC81308), Fog());
+    if (adjusted.brake > *brake || adjusted.gas < *gas) {
+        *gas = adjusted.gas;
+        *brake = adjusted.brake;
+        ++s_EmergencyApproaches;
+        LogActivity(now);
+    }
 }
 
 float __cdecl OnTrafficSpeed(void* car) noexcept {
@@ -846,17 +878,17 @@ float __cdecl OnTrafficSpeed(void* car) noexcept {
     const auto collidedAt = Read<std::uint32_t>(car, 0x3C);
     const auto position = EntityPosition(car);
     const auto forward = EntityForward(car);
-    const auto siren = ApproachingSiren(position, forward, now);
+    const auto emergencyScale = YieldSpeedScale(position, forward, Read<ulw::Point>(car, 0x44), now);
     const auto trafficIncident = s_Crashes.Ahead(position, forward, now);
     const auto adjusted = ulw::TrafficLimit({
         limit, static_cast<float>(Read<std::uint8_t>(car, 0x3D0)), GameValue<float>(0xC81308), Fog(),
         GameValue<std::uint8_t>(0xB70153), Read<std::uint16_t>(car, 0x20),
         collidedAt != 0 && now - collidedAt < 1350 && Read<float>(car, 0xD8) > 5.0f,
-        siren, trafficIncident,
+        emergencyScale, trafficIncident,
     });
     if (adjusted < limit) {
         ++s_RestrictedDrivers;
-        s_YieldingDrivers += siren ? 1u : 0u;
+        s_YieldingDrivers += emergencyScale < 1.0f ? 1u : 0u;
         s_CrashSlowdowns += trafficIncident ? 1u : 0u;
     }
     LogActivity(now);
@@ -1176,6 +1208,13 @@ bool InstallTraffic() noexcept {
         PatchCalls({0x4347C3, 0x435302}, 0x434400, reinterpret_cast<std::uintptr_t>(&OnTrafficSpeed));
 }
 
+bool InstallServiceApproach() noexcept {
+    return Matches(0x437C20, Entry{0x83, 0xEC, 0x34, 0x56, 0x8B, 0x74, 0x24, 0x3C}) &&
+        Matches(0x436A90, Entry{0x81, 0xEC, 0xE4, 0x00, 0x00, 0x00, 0x55, 0x56}) &&
+        Matches(0x437E39, std::array<std::uint8_t, 6>{0x8D, 0x44, 0x24, 0x1C, 0x50, 0x56}) &&
+        PatchCalls({0x437E3F}, 0x436A90, reinterpret_cast<std::uintptr_t>(&OnServiceApproach));
+}
+
 bool InstallCarObservations() noexcept {
     return VehicleQueriesMatch() &&
         Matches(0x41DA30, Entry{0x90, 0xE9, 0x12, 0x62, 0xFE, 0xFF, 0x6A, 0xFF}) &&
@@ -1252,7 +1291,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.8.0");
+    Log("Ultimate Living World 0.9.0");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");
@@ -1281,6 +1320,9 @@ void Install(const std::filesystem::path& config) noexcept {
     if (GetPrivateProfileIntW(L"Modules", L"Traffic", 1, config.c_str())) {
         traffic = InstallTraffic();
         Log(traffic ? "Installed: traffic speed limits." : "Skipped: traffic speed function differs.");
+    }
+    if (GetPrivateProfileIntW(L"Modules", L"Emergency", 1, config.c_str())) {
+        Log(InstallServiceApproach() ? "Installed: ambulance and fire crew approach." : "Skipped: emergency driving function differs.");
     }
     if (GetPrivateProfileIntW(L"Modules", L"VehiclePhysics", 1, config.c_str())) {
         Log(InstallPhysics() ? "Installed: automobile grip, damage and heat." : "Skipped: automobile wheel call sites differ.");

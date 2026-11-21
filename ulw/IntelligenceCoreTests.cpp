@@ -146,7 +146,7 @@ void TestCrashScenes() {
     Check(!scenes.Ahead({}, north, 2020), "a crash scene should clear once the car drives away");
     scenes.Observe({0x302, 2020, 1510, scene, 0.0f, 0.0f});
     Check(!scenes.Ahead({}, north, 2030), "stopping again must not revive an old impact");
-    ulw::TrafficInput input{50, 40, 0, 0, 12, 12, false, false};
+    ulw::TrafficInput input{50, 40, 0, 0, 12, 12, false};
     const auto normal = ulw::TrafficLimit(input);
     input.crashAhead = true;
     Check(ulw::TrafficLimit(input) < normal, "the incident must lower the speed cap");
@@ -245,7 +245,7 @@ void TestAirSupportAndRoadblocks() {
 }
 
 void TestTrafficAndPhysics() {
-    ulw::TrafficInput input{40, 30, 0, 0, 12, 505, false, false};
+    ulw::TrafficInput input{40, 30, 0, 0, 12, 505, false};
     const auto dry = ulw::TrafficLimit(input);
     Check(dry > 0 && dry <= input.cruiseSpeed, "traffic cap must use the cruise speed");
     input.wet = 1;
@@ -253,7 +253,7 @@ void TestTrafficAndPhysics() {
     input.hour = 23;
     const auto poorVisibility = ulw::TrafficLimit(input);
     Check(poorVisibility < dry && ulw::SightRange(1, 1, 23) < ulw::SightRange(0, 0, 12), "wet night fog should limit speed and sight");
-    input.sirenApproaching = true;
+    input.emergencyScale = 0.74f;
     Check(ulw::TrafficLimit(input) < poorVisibility, "an approaching siren should slow traffic");
     input.recentCollision = true;
     Check(ulw::TrafficLimit(input) < poorVisibility * 0.7f, "traffic should slow after collision");
@@ -282,6 +282,43 @@ void TestTrafficAndPhysics() {
     vehicle.health = 250;
     const auto worn = road.Tune(native, vehicle);
     Check(worn.thrust < native.thrust && worn.brake < native.brake, "near-critical damage should reduce thrust and braking");
+}
+
+void TestEmergencyServices() {
+    using ulw::EmergencyState;
+    constexpr ulw::Point north{0, 1, 0}, east{1, 0, 0};
+    ulw::EmergencyUnit ambulance{{}, {0, 0.4f, 0}, 0x301, 1000, EmergencyState::Responding};
+    Check(ulw::EmergencyYieldScale({0, 20, 0}, north, {0, 0.15f, 0}, 1100, ambulance) < 1,
+        "a closing ambulance should cause cars ahead to yield");
+    Check(ulw::EmergencyYieldScale({0, 20, 0}, north, {0, 0.45f, 0}, 1100, ambulance) == 1 &&
+        ulw::EmergencyYieldScale({0, -10, 0}, north, {0, 0.15f, 0}, 1100, ambulance) == 1,
+        "cars already pulling away or behind the response should maintain their pace");
+    Check(ulw::EmergencyYieldScale({-5, 10, 0}, east, {0.2f, 0, 0}, 1100, ambulance) < 1,
+        "crossing traffic should yield when both vehicles would reach the same spot");
+    Check(ulw::EmergencyYieldScale({-12, 8, 0}, {-1, 0, 0}, {-0.2f, 0, 0}, 1100, ambulance) == 1 &&
+        ulw::EmergencyYieldScale({-5, 10, 6}, east, {0.2f, 0, 0}, 1100, ambulance) == 1,
+        "diverging paths and overpasses should stay native");
+    Check(ulw::EmergencyYieldScale({0, 20, 0}, north, {0, 0.15f, 0}, 1900, ambulance) == 1,
+        "old siren reports must expire");
+    ambulance.state = EmergencyState::OnScene;
+    ambulance.velocity = {};
+    Check(ulw::EmergencyYieldScale({0, -10, 0}, north, {0, 0.16f, 0}, 2000, ambulance) < 1 &&
+        ulw::EmergencyYieldScale({0, -10, 0}, {0, -1, 0}, {0, -0.16f, 0}, 2000, ambulance) == 1,
+        "a parked response should only slow cars approaching the scene");
+    Check(ulw::EmergencyYieldScale({0, -10, 0}, north, {0, 0.16f, 0}, 3000, ambulance) == 1,
+        "an unobserved work zone must expire");
+
+    constexpr ulw::DrivePedals native{0.8f, 0.0f};
+    const auto dry = ulw::EmergencyApproach(native, 26.0f * 26.0f, 0.17f, 0.0f, 0.0f);
+    const auto wet = ulw::EmergencyApproach(native, 26.0f * 26.0f, 0.17f, 1.0f, 1.0f);
+    Check(dry.brake > 0 && dry.gas < native.gas && wet.brake > dry.brake && wet.gas < dry.gas,
+        "emergency crews should slow earlier on wet foggy approaches");
+    Check(ulw::EmergencyApproach(native, 70.0f * 70.0f, 0.17f, 1, 1).gas == native.gas &&
+        ulw::EmergencyApproach(native, 20.0f * 20.0f, 0.001f, 1, 1).gas == native.gas,
+        "normal driving must continue while far away or already crawling");
+    Check(ulw::EmergencyApproach({0.6f, 0.9f}, 12.0f * 12.0f, 0.4f, 1, 1).brake == 0.9f &&
+        ulw::EmergencyApproach({-0.5f, 0.2f}, 12.0f * 12.0f, 0.4f, 1, 1).gas == -0.5f,
+        "emergency braking must not weaken native brakes or change reverse behavior");
 }
 
 void TestCombat() {
@@ -446,6 +483,8 @@ int wmain(int argc, wchar_t** argv) {
         TestCrashScenes();
         TestPedestrianRoutines();
         TestTrafficAndPhysics();
+        TestEmergencyServices();
+        std::puts("Emergency services: closing and crossing traffic, working crews and arrival braking passed.");
         std::puts("Pedestrians: routine timing, witness memory, and crash-aware footpaths passed.");
         std::puts("Street systems: police search and reports, traffic limits, wet grip and brake fade passed.");
         TestVehicleDamageAndCooling();
