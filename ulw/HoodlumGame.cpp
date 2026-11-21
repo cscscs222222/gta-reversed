@@ -85,6 +85,8 @@ using ArmedControl = void*(__thiscall*)(void*, void*);
 using ArmedSubTask = void*(__thiscall*)(void*, unsigned, void*);
 using PedReference = int(__cdecl*)(const void* ped);
 using PedFromReference = const void*(__cdecl*)(int);
+using LivePed = void*(__cdecl*)(int);
+using LiveVehicle = const void*(__cdecl*)(int);
 using HelpMessage = void(__cdecl*)(const char*, bool, bool, bool);
 using AbortTask = bool(__thiscall*)(void*, void*, int, const void*);
 using TaskType = unsigned(__thiscall*)(const void*);
@@ -143,6 +145,10 @@ using EmptyAttractorSlot = bool(__thiscall*)(void*, const void*, const void*);
 using UseAttractor = void*(__thiscall*)(void*, const void*, void*);
 using UsePhone = void*(__thiscall*)(void*, int);
 using LeaveCar = void*(__thiscall*)(void*, void*, int, int, bool);
+using EnterPassenger = void*(__thiscall*)(void*, void*, int, bool);
+using PassengerWait = void*(__thiscall*)(void*, void*, int);
+using DriveToPoint = void*(__thiscall*)(void*, void*, const ulw::Point&, float, int, int, float, std::int8_t);
+using DoorClear = bool(__cdecl*)(const void*, int, const ulw::Point*);
 using ActiveTask = const void*(__thiscall*)(const void*);
 using AssignTask = void(__thiscall*)(void*, void*, int, bool);
 using WanderControl = void*(__thiscall*)(void*, void*);
@@ -192,6 +198,19 @@ struct RoadsideStop {
 std::optional<RoadsideStop> s_Roadside{};
 std::optional<std::uint32_t> s_LastPullOver{};
 std::optional<std::uint32_t> s_LastShoulderProbe{};
+struct TaxiRide {
+    int vehicle{}, driver{}, passenger{};
+    std::uint32_t phaseAt{}, checkedAt{};
+    ulw::TaxiStage phase{};
+    ulw::Point destination{};
+    RoadsideStop stop{};
+    void* driverTask{};
+    void* passengerTask{};
+};
+std::optional<TaxiRide> s_TaxiRide{};
+std::optional<std::uint32_t> s_LastTaxiProbe{};
+std::optional<std::uint32_t> s_LastTaxiRide{};
+bool s_TaxiCancelRequested{};
 ulw::RoadblockAttempts s_Roadblocks{};
 ulw::CrashScenes s_Crashes{};
 ulw::CrashWitnesses s_CrashWitnesses{};
@@ -255,6 +274,9 @@ unsigned s_LaneReturns{};
 unsigned s_RoadsideStarts{};
 unsigned s_RoadsideParked{};
 unsigned s_RoadsideExits{};
+unsigned s_TaxiPickups{};
+unsigned s_TaxiBoardings{};
+unsigned s_TaxiDropoffs{};
 unsigned s_PoliceReports{};
 unsigned s_SuspicionWarnings{};
 unsigned s_InvestigationRoutes{};
@@ -291,6 +313,7 @@ bool s_FollowingTraffic{};
 bool s_BendTraffic{};
 bool s_RoadsideEnabled{};
 bool s_RoadsideExit{};
+bool s_TaxiEnabled{};
 bool s_PoliceWitnesses{};
 bool s_PoliceCruise{};
 bool s_FootInspectionsEnabled{};
@@ -358,6 +381,9 @@ void LogActivity(std::uint32_t now) noexcept {
     Log(message);
     std::snprintf(message, sizeof(message), "roadsideStarts=%u roadsideParked=%u roadsideExits=%u",
         s_RoadsideStarts, s_RoadsideParked, s_RoadsideExits);
+    Log(message);
+    std::snprintf(message, sizeof(message), "taxiPickups=%u taxiBoardings=%u taxiDropoffs=%u",
+        s_TaxiPickups, s_TaxiBoardings, s_TaxiDropoffs);
     Log(message);
     std::snprintf(message, sizeof(message), "policeReports=%u drivingWarnings=%u investigationRoutes=%u voluntaryArrests=%u",
         s_PoliceReports, s_SuspicionWarnings, s_InvestigationRoutes, s_VoluntaryArrests);
@@ -446,6 +472,8 @@ float Dot(ulw::Point left, ulw::Point right) noexcept {
     return left.x * right.x + left.y * right.y + left.z * right.z;
 }
 
+void EndTaxiRide() noexcept;
+
 void ClearStreetMemory() noexcept {
     s_Police.Reset();
     s_PatrolTeam.Reset();
@@ -460,6 +488,9 @@ void ClearStreetMemory() noexcept {
     s_Roadside.reset();
     s_LastPullOver.reset();
     s_LastShoulderProbe.reset();
+    s_TaxiCancelRequested = s_TaxiRide.has_value();
+    s_LastTaxiProbe.reset();
+    s_LastTaxiRide.reset();
     s_Roadblocks.Reset();
     s_AirPatrols = {};
     s_FlightGround = {};
@@ -554,6 +585,9 @@ void __cdecl OnProcessScripts() noexcept {
     }
     if (changed && s_Diagnostics) {
         LogMissionState();
+    }
+    if (s_TaxiCancelRequested) {
+        EndTaxiRide();
     }
 }
 
@@ -2504,6 +2538,345 @@ void __cdecl OnTrafficSteering(void* car, float* steer, float* gas, float* brake
     }
 }
 
+void* TaxiPed(int ref) noexcept {
+    const auto* const pool = GameValue<const void*>(PedPool);
+    if (ref < 0 || (ref & 0x80) || !pool ||
+        (static_cast<unsigned>(ref) >> 8) >= Read<unsigned>(pool, 0x08)) {
+        return nullptr;
+    }
+    return GameFunction<LivePed>(0x54FF90)(ref);
+}
+
+std::byte* TaxiTaskManager(const void* ped) noexcept {
+    auto* const intelligence = ped ? Read<std::byte*>(ped, 0x47C) : nullptr;
+    return intelligence ? intelligence + 4 : nullptr;
+}
+
+constexpr int TaxiTaskSlot = 1;
+
+bool TaxiTaskOpen(const void* ped, const void* owned = nullptr) noexcept {
+    const auto* const manager = TaxiTaskManager(ped);
+    return manager && !Read<const void*>(manager) &&
+        !Read<const void*>(manager, 2 * sizeof(void*)) &&
+        (!Read<const void*>(manager, TaxiTaskSlot * sizeof(void*)) ||
+            Read<const void*>(manager, TaxiTaskSlot * sizeof(void*)) == owned);
+}
+
+void EndTaxiRide() noexcept {
+    const auto current = s_TaxiRide;
+    s_TaxiCancelRequested = false;
+    s_TaxiRide.reset();
+    if (!current || !GameValue<void*>(TaskPool)) {
+        return;
+    }
+    for (const auto& [id, owned] : std::array{
+            std::pair{current->driver, current->driverTask},
+            std::pair{current->passenger, current->passengerTask},
+    }) {
+        auto* const ped = TaxiPed(id);
+        auto* const manager = TaxiTaskManager(ped);
+        if (owned && manager && Read<void*>(manager, TaxiTaskSlot * sizeof(void*)) == owned) {
+            const auto abort = GameFunction<AbortTask>(Read<std::uintptr_t>(Read<const void*>(owned), 0x18));
+            if (abort(owned, ped, 1, nullptr)) {
+                GameFunction<AssignTask>(0x681AF0)(manager, nullptr, TaxiTaskSlot, false);
+            }
+        }
+    }
+}
+
+bool IsTaxi(const void* car) noexcept {
+    const auto model = Read<std::uint16_t>(car, 0x22);
+    return model == 420 || model == 438;
+}
+
+bool LegalTaxi(const void* car) noexcept {
+    return IsRoadCar(car) && Read<std::uint8_t>(car, 0x4A4) == 1 &&
+        (Read<std::uint8_t>(car, 0x36) >> 3) == 3 && (Read<std::uint8_t>(car, 0x428) & 0x1F) == 0x10 &&
+        !(Read<std::uint8_t>(car, 0x42A) & 0x08) && Read<float>(car, 0x4C0) >= 650.0f;
+}
+
+void* FindTaxiPassenger(const RoadsideStop& stop) noexcept {
+    std::array<void*, 20> entities{};
+    std::int16_t count{};
+    GameFunction<NearbyEntities>(0x564A20)(stop.target, 7.0f, false, &count, static_cast<std::int16_t>(entities.size()),
+        entities.data(), false, false, true, false, false);
+    if (count >= static_cast<std::int16_t>(entities.size())) {
+        return nullptr;
+    }
+    const ulw::Point right{stop.axis.y, -stop.axis.x, 0.0f};
+    for (int i = 0; i < count; ++i) {
+        auto* const ped = entities[static_cast<std::size_t>(i)];
+        if (!ped || !TaxiTaskOpen(ped)) {
+            continue;
+        }
+        auto* const task = GameFunction<ActiveTask>(0x681720)(TaxiTaskManager(ped));
+        if (!AmbientWalker(task, ped)) {
+            continue;
+        }
+        const auto position = EntityPosition(ped);
+        const ulw::Point offset{position.x - stop.target.x, position.y - stop.target.y, position.z - stop.target.z};
+        const auto lateral = Dot(offset, right);
+        if (lateral >= 1.8f && lateral <= 5.5f && std::abs(Dot(offset, stop.axis)) <= 5.5f &&
+            std::abs(offset.z) < 1.5f && CityPathVisible(position, stop.target)) {
+            return ped;
+        }
+    }
+    return nullptr;
+}
+
+void StartTaxiRide(void* car, int vehicle, void* driver, int driverRef, std::uint32_t now) noexcept {
+    if (!AmbientTrafficCar(car) || Read<std::uint8_t>(car, 0x484) != 0 || Read<std::uint8_t>(car, 0x3BB) ||
+        !TaxiTaskOpen(driver) ||
+        (s_LastTaxiProbe && now - *s_LastTaxiProbe < 1450) ||
+        (s_LastTaxiRide && now - *s_LastTaxiRide < 27000)) {
+        return;
+    }
+    const auto position = EntityPosition(car);
+    const auto travel = Read<ulw::Point>(car, 0x44);
+    if (!(std::hypot(travel.x, travel.y) < 0.13f)) {
+        return;
+    }
+    s_LastTaxiProbe = now;
+    const auto stop = PlanRoadside(car, static_cast<std::uint32_t>(vehicle), driverRef, now, position);
+    if (!stop) {
+        return;
+    }
+    const auto destination = s_CityLife.TaxiDestination(stop->target, GameValue<std::uint16_t>(0xC81314), now);
+    if (!destination) {
+        return;
+    }
+    auto* const passenger = FindTaxiPassenger(*stop);
+    if (!passenger) {
+        return;
+    }
+    const auto ref = GameFunction<PedReference>(0x54FF60)(passenger);
+    if (ref < 0 || (ref & 0x80)) {
+        return;
+    }
+    auto* const memory = GameFunction<AllocateTask>(0x61A5A0)(0x20);
+    if (!memory) {
+        ++s_AllocationFailures;
+        return;
+    }
+    auto* const wait = GameFunction<StandStill>(0x62F310)(memory, 11000, false, false, 8.0f);
+    auto* const manager = TaxiTaskManager(passenger);
+    GameFunction<AssignTask>(0x681AF0)(manager, wait, TaxiTaskSlot, false);
+    if (Read<void*>(manager, TaxiTaskSlot * sizeof(void*)) != wait) {
+        return;
+    }
+    s_TaxiRide = TaxiRide{vehicle, driverRef, ref, now, now, ulw::TaxiStage::Pickup, *destination, *stop, nullptr, wait};
+    s_LastTaxiRide = now;
+    ++s_TaxiPickups;
+    LogActivity(now);
+}
+
+bool ParkTaxi(void* car, TaxiRide& ride, std::uint32_t now, bool& stoppedAtCurb) noexcept {
+    const auto position = EntityPosition(car);
+    const auto facing = EntityForward(car);
+    const auto travel = Read<ulw::Point>(car, 0x44);
+    const ulw::Point toStop{ride.stop.target.x - position.x, ride.stop.target.y - position.y,
+        ride.stop.target.z - position.z};
+    const auto axis = ride.stop.axis;
+    const ulw::Point right{axis.y, -axis.x, 0.0f};
+    const auto ahead = Dot(toStop, axis);
+    const auto side = Dot(toStop, right);
+    if (!(ahead >= -2.1f && ahead <= 24.0f && std::abs(side) < 6.4f && std::abs(toStop.z) < 1.6f &&
+            Dot(facing, axis) > 0.72f)) {
+        return false;
+    }
+    stoppedAtCurb = ahead <= 1.8f && std::abs(side) < 0.86f && std::hypot(travel.x, travel.y) < 0.009f;
+    if (ride.phase == ulw::TaxiStage::Pickup || ride.phase == ulw::TaxiStage::Dropoff) {
+        if (!stoppedAtCurb && now - ride.checkedAt >= 260) {
+            ride.checkedAt = now;
+            if (!ClearShoulder(car, position, ride.stop.target, ride.stop.halfWidth)) {
+                return false;
+            }
+        }
+    }
+    const auto difference = std::atan2(facing.x * toStop.y - facing.y * toStop.x,
+        std::max(1.4f, Dot(toStop, facing)));
+    const auto response = ahead <= 1.8f && std::abs(side) < 0.86f
+        ? ulw::RoadsideControl{ulw::RoadsideAction::Hold, 0.0f, 0.0f, 0.62f}
+        : ulw::ShoulderApproach(ahead, difference, std::hypot(travel.x, travel.y) * 50.0f);
+    if (response.action == ulw::RoadsideAction::End) {
+        return false;
+    }
+    auto* const bytes = static_cast<std::byte*>(car);
+    const auto gas = Read<float>(car, 0x49C);
+    const auto brake = Read<float>(car, 0x4A0);
+    const auto limitedGas = std::min(std::max(0.0f, gas), response.gasCap);
+    const auto appliedBrake = std::max(brake, response.brake);
+    if (gas >= 0 && brake < 0.5f && !(Read<std::uint8_t>(car, 0x428) & 0x20)) {
+        std::memcpy(bytes + 0x494, &response.steer, sizeof(response.steer));
+    }
+    std::memcpy(bytes + 0x49C, &limitedGas, sizeof(limitedGas));
+    std::memcpy(bytes + 0x4A0, &appliedBrake, sizeof(appliedBrake));
+    return true;
+}
+
+bool SetTaxiPassengerTask(TaxiRide& ride, void* passenger, void* task) noexcept {
+    auto* const manager = TaxiTaskManager(passenger);
+    GameFunction<AssignTask>(0x681AF0)(manager, task, TaxiTaskSlot, false);
+    if (!task || Read<void*>(manager, TaxiTaskSlot * sizeof(void*)) != task) {
+        return false;
+    }
+    ride.passengerTask = task;
+    return true;
+}
+
+bool BeginTaxiDrive(TaxiRide& ride, void* car, void* driver, void* passenger) noexcept {
+    if (!TaxiTaskOpen(driver, ride.driverTask) || !TaxiTaskOpen(passenger, ride.passengerTask)) {
+        return false;
+    }
+    auto* const riderMemory = GameFunction<AllocateTask>(0x61A5A0)(0x70);
+    if (!riderMemory) {
+        ++s_AllocationFailures;
+        return false;
+    }
+    if (!SetTaxiPassengerTask(ride, passenger, GameFunction<PassengerWait>(0x5FF940)(riderMemory, car, 62000))) {
+        return false;
+    }
+    auto* const driveMemory = GameFunction<AllocateTask>(0x61A5A0)(0x3C);
+    if (!driveMemory) {
+        ++s_AllocationFailures;
+        return false;
+    }
+    auto* const task = GameFunction<DriveToPoint>(0x63CE00)(driveMemory, car, ride.destination, 13.0f, 0, -1, 7.0f, 6);
+    auto* const manager = TaxiTaskManager(driver);
+    GameFunction<AssignTask>(0x681AF0)(manager, task, TaxiTaskSlot, false);
+    if (Read<void*>(manager, TaxiTaskSlot * sizeof(void*)) != task) {
+        return false;
+    }
+    ride.driverTask = task;
+    return true;
+}
+
+void __cdecl OnTaxiDrive(void* car) noexcept {
+    GameFunction<CarAI>(0x437C20)(car);
+    if (!s_TaxiEnabled || !IsTaxi(car)) {
+        return;
+    }
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    if (!StreetActive(now) || GameValue<std::int32_t>(0xB72914) != 0 || s_TaxiCancelRequested) {
+        EndTaxiRide();
+        return;
+    }
+    if (!GameValue<void*>(TaskPool) || !GameValue<void*>(VehiclePool) || !GameValue<void*>(PedPool)) {
+        return;
+    }
+    const auto vehicle = GameFunction<PedReference>(0x54FFC0)(car);
+    if (vehicle < 0 || (vehicle & 0x80)) {
+        return;
+    }
+    if (s_TaxiRide && (now - s_TaxiRide->phaseAt > 63000 ||
+            GameFunction<LiveVehicle>(0x54FFF0)(s_TaxiRide->vehicle) == nullptr)) {
+        EndTaxiRide();
+    }
+    if (!LegalTaxi(car)) {
+        if (s_TaxiRide && s_TaxiRide->vehicle == vehicle) {
+            EndTaxiRide();
+        }
+        return;
+    }
+    auto* const driver = Read<void*>(car, 0x460);
+    if (!driver || Read<std::uint8_t>(driver, 0x484) != 1 || !(Read<float>(driver, 0x540) > 0.0f)) {
+        if (s_TaxiRide && s_TaxiRide->vehicle == vehicle) {
+            EndTaxiRide();
+        }
+        return;
+    }
+    if (s_TaxiRide && s_TaxiRide->vehicle != vehicle) {
+        return;
+    }
+    const auto driverRef = GameFunction<PedReference>(0x54FF60)(driver);
+    if (driverRef < 0 || (driverRef & 0x80)) {
+        return;
+    }
+    if (!s_TaxiRide) {
+        StartTaxiRide(car, vehicle, driver, driverRef, now);
+    }
+    if (!s_TaxiRide) {
+        return;
+    }
+    auto& ride = *s_TaxiRide;
+    auto* const passenger = TaxiPed(ride.passenger);
+    if (driverRef != ride.driver || !passenger || Read<std::uint8_t>(passenger, 0x484) != 1 ||
+        !(Read<float>(passenger, 0x540) > 0) || !TaxiTaskOpen(passenger, ride.passengerTask) ||
+        !TaxiTaskOpen(driver, ride.driverTask)) {
+        EndTaxiRide();
+        return;
+    }
+    const bool seated = Read<const void*>(car, 0x464) == passenger;
+    bool stopped = false;
+    const bool canMove = ride.phase == ulw::TaxiStage::Driving || ParkTaxi(car, ride, now, stopped);
+    const auto position = EntityPosition(car);
+    const auto kerbDistance = ulw::DistanceSquared(position, EntityPosition(passenger));
+    const bool exitClear = !seated && PedOnFoot(passenger) && kerbDistance >= 2.5f * 2.5f;
+    const auto action = ulw::NextTaxiAction({ride.phase, now - ride.phaseAt, seated, stopped,
+        ulw::DistanceSquared(position, ride.destination) <= 29.0f * 29.0f, canMove, exitClear});
+    switch (action) {
+    case ulw::TaxiAction::Board:
+        if (!PedOnFoot(passenger) || !GameFunction<DoorClear>(0x6504C0)(car, 8, nullptr) ||
+            !CityPathVisible(EntityPosition(passenger), EntityPosition(car))) {
+            return;
+        }
+        if (auto* const memory = GameFunction<AllocateTask>(0x61A5A0)(0x50)) {
+            if (SetTaxiPassengerTask(ride, passenger, GameFunction<EnterPassenger>(0x640340)(memory, car, 0, false))) {
+                ride.phase = ulw::TaxiStage::Boarding;
+                ride.phaseAt = now;
+                return;
+            }
+        } else {
+            ++s_AllocationFailures;
+        }
+        EndTaxiRide();
+        return;
+    case ulw::TaxiAction::Drive:
+        if (BeginTaxiDrive(ride, car, driver, passenger)) {
+            ride.phase = ulw::TaxiStage::Driving;
+            ride.phaseAt = now;
+            ++s_TaxiBoardings;
+        } else {
+            EndTaxiRide();
+        }
+        return;
+    case ulw::TaxiAction::FindStop:
+        if (now - ride.checkedAt >= 520) {
+            ride.checkedAt = now;
+            if (const auto stop = PlanRoadside(car, static_cast<std::uint32_t>(vehicle), driverRef, now, EntityPosition(car))) {
+                ride.stop = *stop;
+                ride.phase = ulw::TaxiStage::Dropoff;
+                ride.phaseAt = now;
+            }
+        }
+        return;
+    case ulw::TaxiAction::Unboard:
+        if (!GameFunction<DoorClear>(0x6504C0)(car, 8, nullptr)) {
+            return;
+        }
+        if (auto* const memory = GameFunction<AllocateTask>(0x61A5A0)(0x1C)) {
+            if (SetTaxiPassengerTask(ride, passenger, GameFunction<LeaveCar>(0x63BDD0)(memory, car, 8, 180, true))) {
+                ride.phase = ulw::TaxiStage::Leaving;
+                ride.phaseAt = now;
+                return;
+            }
+        } else {
+            ++s_AllocationFailures;
+        }
+        EndTaxiRide();
+        return;
+    case ulw::TaxiAction::Complete:
+        ++s_TaxiDropoffs;
+        LogActivity(now);
+        [[fallthrough]];
+    case ulw::TaxiAction::Cancel:
+        EndTaxiRide();
+        return;
+    case ulw::TaxiAction::Wait:
+        return;
+    }
+}
+
 void __fastcall OnTrafficHorn(void* car, void*) noexcept {
     const auto native = GameFunction<CarHorn>(0x6A3820);
     const auto now = GameValue<std::uint32_t>(0xB7CB84);
@@ -3309,6 +3682,34 @@ bool InstallCarObservations() noexcept {
         PatchCalls({0x6B51CD, 0x6B52A2}, 0x41DA30, reinterpret_cast<std::uintptr_t>(&OnCarAI));
 }
 
+bool InstallTaxis() noexcept {
+    return s_CityVenues && VehicleQueriesMatch() && PedQueriesMatch() &&
+        Matches(0x54FF90, Entry{0x8B, 0x4C, 0x24, 0x04, 0x8B, 0x15, 0x90, 0x44}) &&
+        Matches(0x54FFF0, Entry{0x8B, 0x4C, 0x24, 0x04, 0x8B, 0x15, 0x94, 0x44}) &&
+        Matches(0x437C20, Entry{0x83, 0xEC, 0x34, 0x56, 0x8B, 0x74, 0x24, 0x3C}) &&
+        Matches(0x42EA06, std::array<std::uint8_t, 7>{0x03, 0x0C, 0x95, 0x74, 0xF9, 0x96, 0x00}) &&
+        Matches(0x42DF0E, std::array<std::uint8_t, 5>{0x0F, 0xB6, 0x44, 0x28, 0x18}) &&
+        Matches(0x44DB00, Entry{0x51, 0x8A, 0x41, 0x0B, 0x8A, 0xD0, 0x80, 0xE2}) &&
+        Matches(0x49D610, Entry{0x83, 0xEC, 0x08, 0x53, 0x56, 0x8B, 0x74, 0x24}) &&
+        Matches(0x49D420, Entry{0x53, 0x56, 0x8B, 0x74, 0x24, 0x0C, 0x8B, 0xCE}) &&
+        Matches(0x535300, Entry{0x8A, 0x41, 0x36, 0x24, 0x07, 0x3C, 0x02, 0x75}) &&
+        Matches(0x564A20, Entry{0x83, 0xEC, 0x18, 0x53, 0x55, 0x56, 0x57, 0x8B}) &&
+        Matches(0x5674E0, Entry{0x83, 0xEC, 0x2C, 0x90, 0x90, 0x90, 0x90, 0xE9}) &&
+        Matches(0x407C37, Entry{0x66, 0x83, 0x3D, 0x78, 0xCD, 0xB7, 0x00, 0xFF}) &&
+        Matches(0x428A41, std::array<std::uint8_t, 9>{0x8B, 0x80, 0x7C, 0x04, 0x00, 0x00, 0x8D, 0x48, 0x04}) &&
+        Matches(0x681720, Entry{0x33, 0xC0, 0x83, 0x3C, 0x81, 0x00, 0x75, 0x09}) &&
+        Matches(0x681AF0, Entry{0x53, 0x8B, 0x5C, 0x24, 0x08, 0x85, 0xDB, 0x56}) &&
+        Matches(0x61A5A0, Entry{0x8B, 0x0D, 0xA8, 0x44, 0xB7, 0x00, 0xE9, 0x55}) &&
+        Matches(0x62F310, Entry{0x56, 0x8B, 0xF1, 0xE8, 0x78, 0xB0, 0xFE, 0xFF}) &&
+        Matches(0x63BDD0, Entry{0x6A, 0xFF, 0x68, 0xF8, 0x16, 0x84, 0x00, 0x64}) &&
+        Matches(0x640340, Entry{0x8B, 0x44, 0x24, 0x0C, 0x56, 0x50, 0x6A, 0x00}) &&
+        Matches(0x5FF940, Entry{0x8B, 0x44, 0x24, 0x04, 0x53, 0x56, 0x33, 0xDB}) &&
+        Matches(0x63CE00, Entry{0x8B, 0x44, 0x24, 0x1C, 0x8B, 0x54, 0x24, 0x0C}) &&
+        Matches(0x6504C0, Entry{0x81, 0xEC, 0x88, 0x00, 0x00, 0x00, 0xC7, 0x44}) &&
+        Matches(0x6B52A7, std::array<std::uint8_t, 1>{0x56}) &&
+        PatchCalls({0x6B52A8}, 0x437C20, reinterpret_cast<std::uintptr_t>(&OnTaxiDrive));
+}
+
 bool SurfaceLayoutMatches() noexcept {
     return Matches(0x55E6F7, std::array<std::uint8_t, 7>{0x8B, 0x84, 0x81, 0x94, 0, 0, 0}) &&
         Matches(0x55E917, std::array<std::uint8_t, 7>{0x8B, 0x84, 0x81, 0x98, 0, 0, 0});
@@ -3483,7 +3884,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.20.0");
+    Log("Ultimate Living World 1.0.0-rc.1");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");
@@ -3551,6 +3952,11 @@ void Install(const std::filesystem::path& config) noexcept {
     if (GetPrivateProfileIntW(L"Modules", L"City", 1, config.c_str())) {
         InstallCity();
         streetPedestrians = InstallStreetPedestrians();
+    }
+    if (GetPrivateProfileIntW(L"Modules", L"Taxi", 1, config.c_str())) {
+        s_TaxiEnabled = InstallTaxis();
+        Log(s_TaxiEnabled ? "Installed: civilian taxi pickup, native routes and curbside dropoff."
+            : "Skipped: taxi task adapters or city venues differ.");
     }
     if (traffic || streetPedestrians || s_PoliceCruise || s_FootInspectionsEnabled) {
         Log(InstallCarObservations() ? "Installed: siren and collision observations." : "Skipped: car observations.");

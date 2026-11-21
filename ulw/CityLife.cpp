@@ -122,6 +122,61 @@ std::optional<VenueObservation> CityLife::FindVenue(CityVenue kind, Point origin
     return found;
 }
 
+std::optional<Point> CityLife::TaxiDestination(Point origin, unsigned region, std::uint32_t now) const noexcept {
+    float nearest = 160.0f * 160.0f;
+    std::optional<Point> result;
+    for (const auto& venue : m_Venues) {
+        if (!venue.observed || venue.observation.region != region || now - venue.seenAt >= 30000 ||
+            !(std::abs(venue.observation.point.z - origin.z) < 5.0f)) {
+            continue;
+        }
+        const auto kind = venue.observation.kind;
+        if (kind != CityVenue::BusStop && kind != CityVenue::Food && kind != CityVenue::ATM && kind != CityVenue::Park) {
+            continue;
+        }
+        const auto distance = DistanceSquared(origin, venue.observation.point);
+        if (distance >= 44.0f * 44.0f && distance < nearest) {
+            nearest = distance;
+            result = venue.observation.point;
+        }
+    }
+    return result;
+}
+
+TaxiAction NextTaxiAction(const TaxiSample& sample) noexcept {
+    if (!sample.ableToContinue) {
+        return TaxiAction::Cancel;
+    }
+    switch (sample.stage) {
+    case TaxiStage::Pickup:
+        if (sample.elapsed > 10000) {
+            return TaxiAction::Cancel;
+        }
+        return sample.stoppedAtCurb && !sample.passengerInCab ? TaxiAction::Board : TaxiAction::Wait;
+    case TaxiStage::Boarding:
+        if (sample.passengerInCab && sample.stoppedAtCurb) {
+            return TaxiAction::Drive;
+        }
+        return sample.elapsed > 7200 ? TaxiAction::Cancel : TaxiAction::Wait;
+    case TaxiStage::Driving:
+        if (!sample.passengerInCab || sample.elapsed > 44500) {
+            return TaxiAction::Cancel;
+        }
+        return sample.nearDestination || sample.elapsed > 32000 ? TaxiAction::FindStop : TaxiAction::Wait;
+    case TaxiStage::Dropoff:
+        if (!sample.passengerInCab || sample.elapsed > 10000) {
+            return TaxiAction::Cancel;
+        }
+        return sample.stoppedAtCurb ? TaxiAction::Unboard : TaxiAction::Wait;
+    case TaxiStage::Leaving:
+        if (!sample.passengerInCab && sample.exitClear) {
+            return TaxiAction::Complete;
+        }
+        return sample.elapsed > 7200 ? TaxiAction::Cancel : TaxiAction::Wait;
+    }
+    return TaxiAction::Cancel;
+}
+
 void CityLife::ReserveVenue(const VenueObservation& venue, std::uint32_t now) noexcept {
     for (auto& entry : m_Venues) {
         if (entry.observed && SameVenue(entry.observation, venue)) {

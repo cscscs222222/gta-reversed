@@ -319,6 +319,34 @@ void TestFootInspections() {
     Check(beats.CanInspect(0x701, {}, crash, 1201), "clearing a city session should discard reservations");
 }
 
+void TestTaxiService() {
+    using ulw::TaxiAction;
+    using ulw::TaxiStage;
+    ulw::CityLife city;
+    city.ObserveVenue({{}, {12, 0, 0}, 21, 1, ulw::CityVenue::Food}, 1000);
+    city.ObserveVenue({{}, {60, 0, 9}, 22, 1, ulw::CityVenue::BusStop}, 1000);
+    city.ObserveVenue({{}, {65, 0, 0}, 23, 2, ulw::CityVenue::ATM}, 1000);
+    city.ObserveVenue({{}, {75, 0, 0}, 24, 1, ulw::CityVenue::Park}, 1000);
+    const auto trip = city.TaxiDestination({}, 1, 1200);
+    Check(trip && trip->x == 75.0f && !city.TaxiDestination({}, 1, 32000),
+        "cab trips should use recent destinations at the correct street level and in the same region");
+    Check(ulw::NextTaxiAction({TaxiStage::Pickup, 1000, false, false, false, true}) == TaxiAction::Wait &&
+        ulw::NextTaxiAction({TaxiStage::Pickup, 1000, false, true, false, true}) == TaxiAction::Board,
+        "passengers should board only after the cab is stopped at the curb");
+    Check(ulw::NextTaxiAction({TaxiStage::Boarding, 2500, false, true, false, true}) == TaxiAction::Wait &&
+        ulw::NextTaxiAction({TaxiStage::Boarding, 2500, true, true, false, true}) == TaxiAction::Drive &&
+        ulw::NextTaxiAction({TaxiStage::Boarding, 7500, false, true, false, true}) == TaxiAction::Cancel,
+        "the driver should wait for confirmed seating and give up when boarding fails");
+    Check(ulw::NextTaxiAction({TaxiStage::Driving, 14000, true, false, true, true}) == TaxiAction::FindStop &&
+        ulw::NextTaxiAction({TaxiStage::Dropoff, 1100, true, false, true, true}) == TaxiAction::Wait &&
+        ulw::NextTaxiAction({TaxiStage::Dropoff, 1100, true, true, true, true}) == TaxiAction::Unboard,
+        "cabs should plan their drop-off and stop before letting the passenger out");
+    Check(ulw::NextTaxiAction({TaxiStage::Leaving, 1100, false, true, true, true, false}) == TaxiAction::Wait &&
+        ulw::NextTaxiAction({TaxiStage::Leaving, 1100, false, true, true, true, true}) == TaxiAction::Complete &&
+        ulw::NextTaxiAction({TaxiStage::Leaving, 1100, true, true, true, false}) == TaxiAction::Cancel,
+        "the taxi must wait for a finished exit and cancel if the trip is interrupted");
+}
+
 void TestCrashScenes() {
     ulw::CrashScenes scenes;
     constexpr ulw::Point scene{0, 15, 0}, north{0, 1, 0};
@@ -1143,6 +1171,8 @@ int wmain(int argc, wchar_t** argv) {
         TestCityActivity();
         std::puts("City: rush hour, regional nightlife and weather schedules passed.");
         TestCityLife();
+        TestTaxiService();
+        std::puts("Taxi service: actual venue selection, pickup, boarding, dropoff and exit wait passed.");
         std::puts("City life: destination schedules, venue reservations, resident tasks and crash witness calls passed.");
         if (argc == 2) {
             TestLoader(argv[1]);

@@ -635,10 +635,17 @@ RoadsideControl RoadsideResponse(const RoadsideInput& input) noexcept {
         }
         return {RoadsideAction::Hold, 0.0f, 0.0f, 0.38f};
     }
-    const auto travel = std::max(input.ahead, 0.0f);
+    return ShoulderApproach(input.ahead, input.headingError, input.speed);
+}
+
+RoadsideControl ShoulderApproach(float ahead, float headingError, float speed) noexcept {
+    if (!(ahead >= -1.8f && ahead <= 24.0f) || !std::isfinite(headingError) || !std::isfinite(speed)) {
+        return {};
+    }
+    const auto travel = std::max(ahead, 0.0f);
     const auto targetSpeed = std::clamp(travel * 0.48f, 1.05f, 5.2f);
-    const auto difference = input.speed - targetSpeed;
-    const auto steer = std::clamp(input.headingError * 0.95f, -0.34f, 0.34f);
+    const auto difference = speed - targetSpeed;
+    const auto steer = std::clamp(headingError * 0.95f, -0.34f, 0.34f);
     return {RoadsideAction::Approach, steer, 0.25f * Unit(1.0f - difference * 0.27f),
         0.55f * Unit(difference / 3.4f)};
 }

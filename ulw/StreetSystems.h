@@ -297,6 +297,7 @@ struct RoadsideControl {
 };
 
 RoadsideControl RoadsideResponse(const RoadsideInput& input) noexcept;
+RoadsideControl ShoulderApproach(float ahead, float headingError, float speed) noexcept;
 
 enum class PedestrianPace : std::uint8_t { Walk, Jog };
 

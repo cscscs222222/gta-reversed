@@ -35,6 +35,7 @@ class CityLife {
 public:
     void ObserveVenue(const VenueObservation& venue, std::uint32_t now) noexcept;
     std::optional<VenueObservation> FindVenue(CityVenue kind, Point origin, unsigned region, std::uint32_t now) const noexcept;
+    std::optional<Point> TaxiDestination(Point origin, unsigned region, std::uint32_t now) const noexcept;
     void ReserveVenue(const VenueObservation& venue, std::uint32_t now) noexcept;
     bool TakeVisitAttempt(std::uint32_t ped, std::uint32_t now, std::uint32_t frame) noexcept;
     bool CanCall(const CrashSite& crash, std::uint32_t now) const noexcept;
@@ -68,5 +69,20 @@ private:
     std::uint32_t m_Frame{};
     unsigned m_Attempts{};
 };
+
+enum class TaxiStage : std::uint8_t { Pickup, Boarding, Driving, Dropoff, Leaving };
+enum class TaxiAction : std::uint8_t { Wait, Board, Drive, FindStop, Unboard, Complete, Cancel };
+
+struct TaxiSample {
+    TaxiStage stage{};
+    std::uint32_t elapsed{};
+    bool passengerInCab{};
+    bool stoppedAtCurb{};
+    bool nearDestination{};
+    bool ableToContinue{};
+    bool exitClear{};
+};
+
+TaxiAction NextTaxiAction(const TaxiSample& sample) noexcept;
 
 }
