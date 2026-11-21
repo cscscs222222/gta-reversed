@@ -8,6 +8,7 @@ namespace {
 
 constexpr std::uint32_t CrashLifetime = 8000;
 constexpr std::uint32_t SuppressionTime = 2400;
+constexpr std::uint32_t GangLossLifetime = 10000;
 
 float Unit(float value) noexcept {
     return std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : 0.0f;
@@ -512,6 +513,99 @@ bool CombatCoverApproach(Point fighter, Point threat, Point destination) noexcep
     return travel >= 1.5f * 1.5f && travel <= 12.0f * 12.0f &&
         std::abs(destination.z - fighter.z) <= 1.4f && advance <= 1.5f * threatRange &&
         DistanceSquared(threat, destination) >= 4.0f * 4.0f;
+}
+
+unsigned CombatCoverHold(unsigned faction, unsigned clip, unsigned total, unsigned reloadRemaining) noexcept {
+    // Police, Ballas, Grove Street and Vagos return fire at different tempos.
+    constexpr std::array<unsigned, 11> wait{620, 420, 740, 900, 690, 760, 560, 610, 710, 590, 720};
+    const auto base = faction >= 6 && faction <= 16 ? wait[faction - 6] : 700u;
+    return total > clip && (clip <= 2 || reloadRemaining != 0)
+        ? std::clamp(reloadRemaining, base + 250, 1900u)
+        : base;
+}
+
+bool CombatShouldWithdraw(unsigned faction, float health, unsigned totalAmmo) noexcept {
+    constexpr std::array<float, 11> reserve{19, 16, 23, 29, 25, 23, 18, 19, 24, 18, 23};
+    return faction >= 6 && faction <= 16 && health > 0.0f && std::isfinite(health) &&
+        (health <= reserve[faction - 6] || totalAmmo == 0);
+}
+
+void CombatManeuvers::Start(std::uint32_t ped, CombatManeuver move) noexcept {
+    m_Entries[(ped >> 8) % m_Entries.size()] = {ped, move};
+}
+
+std::optional<CombatManeuver> CombatManeuvers::Current(std::uint32_t ped, std::uintptr_t parent,
+    std::uintptr_t child) const noexcept {
+    const auto& entry = m_Entries[(ped >> 8) % m_Entries.size()];
+    if (entry.ped != ped || !entry.move || entry.move->parent != parent || entry.move->child != child) {
+        return std::nullopt;
+    }
+    return entry.move;
+}
+
+std::optional<CombatManeuver> CombatManeuvers::TakeInterrupted(std::uint32_t ped, std::uintptr_t parent,
+    std::uintptr_t child) noexcept {
+    auto& entry = m_Entries[(ped >> 8) % m_Entries.size()];
+    if (entry.ped != ped || !entry.move || (entry.move->parent == parent && entry.move->child == child)) {
+        return std::nullopt;
+    }
+    const auto interrupted = entry.move;
+    entry.move.reset();
+    return interrupted;
+}
+
+bool CombatManeuvers::AllyMoving(std::uint32_t ped, unsigned faction, Point origin, std::uint32_t now) const noexcept {
+    return std::any_of(m_Entries.begin(), m_Entries.end(), [&](const auto& entry) {
+        return (entry.ped >> 8) != (ped >> 8) && entry.move && entry.move->faction == faction &&
+            now - entry.move->started < 2100 && DistanceSquared(origin, entry.move->destination) <= 12.0f * 12.0f;
+    });
+}
+
+void CombatManeuvers::Clear(std::uint32_t ped) noexcept {
+    auto& entry = m_Entries[(ped >> 8) % m_Entries.size()];
+    if (entry.ped == ped) {
+        entry.move.reset();
+    }
+}
+
+void CombatManeuvers::Reset() noexcept {
+    m_Entries = {};
+}
+
+bool GangLosses::Record(std::uint32_t ped, unsigned faction, Point position, std::uint32_t now) noexcept {
+    if (faction < 7 || faction > 16) {
+        return false;
+    }
+    for (const auto& loss : m_Recent) {
+        if (loss.faction && loss.ped == ped && now - loss.at < GangLossLifetime) {
+            return false;
+        }
+    }
+    m_Recent[m_Next] = {ped, faction, position, now};
+    m_Next = (m_Next + 1) % m_Recent.size();
+    return true;
+}
+
+bool GangLosses::UnderStrength(unsigned faction, Point position, std::uint32_t now) const noexcept {
+    if (faction < 7 || faction > 16) {
+        return false;
+    }
+    // Ballas, Mafia and Triads keep their position after two nearby losses.
+    const unsigned limit = faction == 7 || faction == 12 || faction == 13 ? 3 : 2;
+    unsigned losses = 0;
+    for (const auto& loss : m_Recent) {
+        if (loss.faction == faction && now - loss.at < GangLossLifetime &&
+            std::abs(loss.position.z - position.z) < 3.0f &&
+            DistanceSquared(loss.position, position) <= 22.0f * 22.0f && ++losses >= limit) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void GangLosses::Reset() noexcept {
+    m_Recent = {};
+    m_Next = 0;
 }
 
 bool CombatPressure::RecordHit(std::uint32_t ped, std::uint32_t hitAt, std::uint32_t now) noexcept {

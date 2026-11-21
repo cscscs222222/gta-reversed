@@ -30,6 +30,7 @@ constexpr std::uintptr_t NativeDamageResponse = 0x4C0170;
 constexpr std::uintptr_t NativeGunTask = 0x62A380;
 constexpr std::uintptr_t GunTaskVtable = 0x86D724;
 constexpr std::uintptr_t NativeArmedControl = 0x62CCE0;
+constexpr std::uintptr_t NativeArmedNext = 0x62C190;
 constexpr std::uintptr_t ArmedTaskVtable = 0x86D918;
 constexpr std::uintptr_t GunControlVtable = 0x86D76C;
 constexpr std::uintptr_t PedPool = 0xB74490;
@@ -48,11 +49,13 @@ constexpr std::size_t ScriptCount = 96;
 constexpr std::uintptr_t StandardWanderVtable = 0x85A200;
 constexpr std::uint32_t Walking = 4;
 constexpr std::uint32_t Jogging = 5;
+constexpr std::uint32_t Running = 6;
 
 using ShotResponse = void(__thiscall*)(void* handler, const void* shot, void* activeTask, void* simplestTask);
 using DamageResponse = void(__thiscall*)(void*, const void*, void*, void*, void*);
 using GunTask = bool(__thiscall*)(void*, void*);
 using ArmedControl = void*(__thiscall*)(void*, void*);
+using ArmedSubTask = void*(__thiscall*)(void*, unsigned, void*);
 using PedReference = int(__cdecl*)(const void* ped);
 using LineClear = bool(__cdecl*)(const ulw::Point&, const ulw::Point&, bool, bool, bool, bool, bool, bool, bool);
 struct CollisionPoint {
@@ -67,6 +70,8 @@ using ReserveCover = void*(__cdecl*)(void*, const ulw::Point&, bool);
 using CoverCoordinates = bool(__cdecl*)(const void*, void*, const ulw::Point&, ulw::Point&);
 using ReleaseCover = void(__thiscall*)(void*, void*);
 using RunToPoint = void*(__thiscall*)(void*, unsigned, const ulw::Point&, float, bool, bool);
+using StandStill = void*(__thiscall*)(void*, int, bool, bool, float);
+using ReleasePedCover = void(__thiscall*)(void*);
 using AllocateTask = void*(__cdecl*)(std::size_t);
 using TurnToPoint = void*(__thiscall*)(void*, const ulw::Point&, float, float);
 using FleePoint = void*(__thiscall*)(void*, const ulw::Point&, bool, float, int);
@@ -104,6 +109,8 @@ ulw::RoadblockAttempts s_Roadblocks{};
 ulw::CrashScenes s_Crashes{};
 ulw::CrashWitnesses s_CrashWitnesses{};
 ulw::CombatPressure s_CombatPressure{};
+ulw::CombatManeuvers s_CombatManeuvers{};
+ulw::GangLosses s_GangLosses{};
 ulw::RoadPhysics s_RoadPhysics{};
 std::array<ulw::EmergencyUnit, 16> s_EmergencyUnits{};
 struct AirObservation {
@@ -131,6 +138,11 @@ unsigned s_ShorterBursts{};
 unsigned s_SuppressionHits{};
 unsigned s_CoverSearches{};
 unsigned s_CoverMoves{};
+unsigned s_CoverHolds{};
+unsigned s_CoverPeeks{};
+unsigned s_Withdrawals{};
+unsigned s_AllyWaits{};
+unsigned s_GangCasualties{};
 unsigned s_AllocationFailures{};
 std::uint32_t s_LastLogTime{};
 std::uint32_t s_LastGameTime{};
@@ -142,6 +154,7 @@ bool s_MissionObserver{};
 bool s_ExecutingScripts{};
 bool s_CrashGlancesEnabled{};
 bool s_PressureObserver{};
+bool s_CoverFollowup{};
 std::uint32_t s_StreetTime{};
 
 template<typename T>
@@ -191,6 +204,9 @@ void LogActivity(std::uint32_t now) noexcept {
         s_PatrolRoutes, s_AirSearches, s_RoadblockAttempts, s_RestrictedDrivers, s_YieldingDrivers, s_CrashSlowdowns,
         s_AttractorUses, s_CrashGlances, s_CrashReroutes, s_EmergencyApproaches,
         s_ExtendedBursts, s_ShorterBursts, s_SuppressionHits, s_CoverSearches, s_CoverMoves);
+    Log(message);
+    std::snprintf(message, sizeof(message), "coverHolds=%u coverPeeks=%u tacticalWithdrawals=%u allyWaits=%u gangCasualties=%u",
+        s_CoverHolds, s_CoverPeeks, s_Withdrawals, s_AllyWaits, s_GangCasualties);
     Log(message);
     s_LastLogTime = now;
 }
@@ -265,6 +281,8 @@ void ClearStreetMemory() noexcept {
     s_Crashes.Reset();
     s_CrashWitnesses.Reset();
     s_CombatPressure.Reset();
+    s_CombatManeuvers.Reset();
+    s_GangLosses.Reset();
     s_EmergencyUnits = {};
 }
 
@@ -511,10 +529,10 @@ bool IsPlayerPed(const void* entity) noexcept {
     return entity && (Read<std::uint8_t>(entity, 0x36) & 7) == 3 && Read<std::uint32_t>(entity, 0x598) == 0;
 }
 
-unsigned StreetFighterFaction(const void* ped) noexcept {
+unsigned StreetFighterFaction(const void* ped, bool countFatality = false) noexcept {
     const auto faction = Read<std::uint32_t>(ped, 0x598);
     if (faction < 6 || faction > 16 || Read<std::uint8_t>(ped, 0x2F) != 0 ||
-        (Read<std::uint8_t>(ped, 0x46D) & 0x07) || !(Read<float>(ped, 0x540) > 0.0f)) {
+        (Read<std::uint8_t>(ped, 0x46D) & 0x07) || (!countFatality && !(Read<float>(ped, 0x540) > 0.0f))) {
         return 0;
     }
     // The engine marks free-roam territory attack waves as mission peds.
@@ -542,12 +560,21 @@ void __fastcall OnDamageResponse(void* handler, void*, const void* event, void* 
     const auto now = GameValue<std::uint32_t>(0xB7CB84);
     // Only damage already calculated by the game counts as a hit.
     if (weapon >= 22 && weapon <= 34 && IsPlayerPed(Read<const void*>(event, 0x14)) &&
-        Read<bool>(event, 0x42) && (Read<float>(event, 0x38) > 0 || Read<float>(event, 0x3C) > 0) &&
-        StreetFighterFaction(victim) && StreetActive(now)) {
-        const auto ref = StreetPedReference(victim);
-        if (ref >= 0 &&
-            s_CombatPressure.RecordHit(static_cast<std::uint32_t>(ref), Read<std::uint32_t>(event, 0x18), now)) {
-            ++s_SuppressionHits;
+        Read<bool>(event, 0x0C) && Read<bool>(event, 0x42) &&
+        (Read<float>(event, 0x38) > 0 || Read<float>(event, 0x3C) > 0) && StreetActive(now)) {
+        const auto hitAt = Read<std::uint32_t>(event, 0x18);
+        const bool fatal = Read<bool>(event, 0x40) && Read<float>(victim, 0x540) <= 0.0f;
+        const auto faction = StreetFighterFaction(victim, fatal);
+        const auto ref = faction ? StreetPedReference(victim) : -1;
+        if (ref >= 0) {
+            const auto pedRef = static_cast<std::uint32_t>(ref);
+            if (fatal) {
+                if (s_CoverFollowup && now - hitAt <= 250 && s_GangLosses.Record(pedRef, faction, EntityPosition(victim), now)) {
+                    ++s_GangCasualties;
+                }
+            } else if (s_CombatPressure.RecordHit(pedRef, hitAt, now)) {
+                ++s_SuppressionHits;
+            }
         }
     }
     GameFunction<DamageResponse>(NativeDamageResponse)(handler, event, active, simplest, aborted);
@@ -601,40 +628,179 @@ bool HasCoverGround(ulw::Point position) noexcept {
     return found && height >= 0.45f && height <= 1.65f;
 }
 
-bool SafeCoverRoute(ulw::Point origin, ulw::Point threat, ulw::Point destination) noexcept {
-    if (!ulw::CombatCoverApproach(origin, threat, destination)) {
-        return false;
-    }
-    auto originHead = origin;
-    auto coverHead = destination;
-    originHead.z += 0.5f;
-    coverHead.z += 0.5f;
+bool FireBlocked(ulw::Point threat, ulw::Point destination, float maximumGap = 100.0f) noexcept {
     threat.z += 0.5f;
+    destination.z += 0.5f;
     const auto trace = GameFunction<TraceLine>(0x56BA00);
     CollisionPoint impact{};
     void* obstacle{};
     // Use the weapon trace's see-through and shoot-through material checks.
-    if (trace(threat, originHead, impact, obstacle, true, true, false, true, true, true, false, true) ||
-        !trace(threat, coverHead, impact, obstacle, true, true, false, true, true, true, false, true) ||
-        !(ulw::DistanceSquared(impact.position, coverHead) <= 4.0f * 4.0f)) {
-        return false;
-    }
+    return trace(threat, destination, impact, obstacle, true, true, false, true, true, true, false, true) &&
+        ulw::DistanceSquared(impact.position, destination) <= maximumGap * maximumGap;
+}
 
+bool WalkableCombatRoute(ulw::Point origin, ulw::Point destination) noexcept {
     const ulw::Point midpoint{(origin.x + destination.x) * 0.5f, (origin.y + destination.y) * 0.5f,
         (origin.z + destination.z) * 0.5f};
     const auto clear = GameFunction<LineClear>(0x56A490);
-    return HasCoverGround(destination) && HasCoverGround(midpoint) &&
-        clear(origin, destination, true, true, false, true, true, false, false) &&
-        clear(originHead, coverHead, true, true, false, true, true, false, false);
+    if (!HasCoverGround(destination) || !HasCoverGround(midpoint) ||
+        !clear(origin, destination, true, true, false, true, true, false, false)) {
+        return false;
+    }
+    origin.z += 0.5f;
+    destination.z += 0.5f;
+    return clear(origin, destination, true, true, false, true, true, false, false);
+}
+
+bool SafeCoverRoute(ulw::Point origin, ulw::Point threat, ulw::Point destination) noexcept {
+    return ulw::CombatCoverApproach(origin, threat, destination) && !FireBlocked(threat, origin) &&
+        FireBlocked(threat, destination, 4.0f) && WalkableCombatRoute(origin, destination);
+}
+
+const void* StreetThreat(const void* task) noexcept {
+    const auto* const target = Read<const void*>(task, 0x0C);
+    return IsPlayerPed(target) && Read<std::uint8_t>(target, 0x2F) == 0 &&
+        !(Read<std::uint8_t>(target, 0x46D) & 0x07) && Read<float>(target, 0x540) > 0.0f ? target : nullptr;
+}
+
+const void* StreetCombatWeapon(const void* ped) noexcept {
+    const auto slot = Read<std::uint8_t>(ped, 0x718);
+    if (slot < 2 || slot > 6) {
+        return nullptr;
+    }
+    const auto* const weapon = static_cast<const std::byte*>(ped) + 0x5A0 + slot * 0x1C;
+    const auto type = Read<unsigned>(weapon);
+    return type >= 22 && type <= 34 ? weapon : nullptr;
+}
+
+void RememberCombatMove(std::uint32_t pedRef, void* task, void* child, const void* cover, ulw::Point destination,
+    std::uint32_t now, unsigned faction, ulw::CombatMove phase) noexcept {
+    s_CombatManeuvers.Start(pedRef, {reinterpret_cast<std::uintptr_t>(task),
+        reinterpret_cast<std::uintptr_t>(child), reinterpret_cast<std::uintptr_t>(cover),
+        destination, now, faction, phase});
+}
+
+void ReleaseManeuverCover(void* ped, const ulw::CombatManeuver& move) noexcept {
+    if (move.cover && Read<std::uintptr_t>(ped, 0x788) == move.cover) {
+        GameFunction<ReleasePedCover>(0x5E0270)(ped);
+    }
+}
+
+void* CreateCombatRun(const ulw::Point& destination) noexcept {
+    if (auto* const move = GameFunction<AllocateTask>(0x61A5A0)(0x30)) {
+        return GameFunction<RunToPoint>(0x667CD0)(move, Running, destination, 0.5f, true, false);
+    }
+    ++s_AllocationFailures;
+    return nullptr;
+}
+
+std::optional<ulw::Point> CombatMoveDestination(ulw::Point origin, ulw::Point threat, bool withdraw,
+    bool preferLeft) noexcept {
+    const auto dx = origin.x - threat.x;
+    const auto dy = origin.y - threat.y;
+    const auto length = std::hypot(dx, dy);
+    const auto awayX = dx / length;
+    const auto awayY = dy / length;
+    const auto back = withdraw ? 8.0f : 0.0f;
+    const auto side = withdraw ? 2.6f : 2.9f;
+    const auto first = preferLeft ? -side : side;
+    for (const auto lateral : {first, -first}) {
+        const ulw::Point destination{origin.x + awayX * back - awayY * lateral,
+            origin.y + awayY * back + awayX * lateral, origin.z};
+        if ((withdraw || !FireBlocked(threat, destination)) && WalkableCombatRoute(origin, destination)) {
+            return destination;
+        }
+    }
+    return std::nullopt;
+}
+
+void* StartWithdrawal(void* task, std::uint32_t pedRef, ulw::Point origin, ulw::Point threat,
+    std::uint32_t now, unsigned faction) noexcept {
+    if (const auto destination = CombatMoveDestination(origin, threat, true, (pedRef & 1) != 0)) {
+        if (auto* const run = CreateCombatRun(*destination)) {
+            RememberCombatMove(pedRef, task, run, nullptr, *destination, now, faction, ulw::CombatMove::Withdraw);
+            ++s_Withdrawals;
+            return run;
+        }
+    }
+    return nullptr;
+}
+
+void* __fastcall OnArmedNext(void* task, void*, void* ped) noexcept {
+    const auto next = GameFunction<ArmedControl>(NativeArmedNext);
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    const auto ref = StreetPedReference(ped);
+    if (ref < 0 || !StreetActive(now)) {
+        return next(task, ped);
+    }
+    const auto pedRef = static_cast<std::uint32_t>(ref);
+    const auto move = s_CombatManeuvers.Current(pedRef, reinterpret_cast<std::uintptr_t>(task),
+        Read<std::uintptr_t>(task, 0x08));
+    if (!move) {
+        return next(task, ped);
+    }
+    s_CombatManeuvers.Clear(pedRef);
+    const auto* const target = StreetThreat(task);
+    const auto* const weapon = StreetCombatWeapon(ped);
+    const auto faction = StreetFighterFaction(ped);
+    if (!target || !weapon || !faction || now - move->started > 4200 ||
+        (move->phase != ulw::CombatMove::Approach && move->phase != ulw::CombatMove::Hold)) {
+        ReleaseManeuverCover(ped, *move);
+        return next(task, ped);
+    }
+    const auto origin = EntityPosition(ped);
+    const auto threat = EntityPosition(target);
+    if (!ulw::CombatCoverInRange(origin, threat) || ulw::DistanceSquared(origin, move->destination) > 1.8f * 1.8f) {
+        ReleaseManeuverCover(ped, *move);
+        return next(task, ped);
+    }
+    const auto total = Read<unsigned>(weapon, 0x0C);
+    const bool blocked = FireBlocked(threat, origin);
+    const bool stillReserved = move->cover && Read<std::uintptr_t>(ped, 0x788) == move->cover;
+    if (move->phase == ulw::CombatMove::Approach && blocked && stillReserved) {
+        const auto clip = Read<unsigned>(weapon, 0x08);
+        const auto reloadAt = Read<std::uint32_t>(weapon, 0x10);
+        const auto reloadRemaining = Read<unsigned>(weapon, 0x04) == 2 && reloadAt > now ? reloadAt - now : 0u;
+        const auto delay = ulw::CombatCoverHold(faction, clip, total, reloadRemaining);
+        if (auto* const memory = GameFunction<AllocateTask>(0x61A5A0)(0x20)) {
+            auto* const hold = GameFunction<StandStill>(0x62F310)(memory, static_cast<int>(delay), false, false, 8.0f);
+            RememberCombatMove(pedRef, task, hold, reinterpret_cast<const void*>(move->cover), origin, now,
+                faction, ulw::CombatMove::Hold);
+            ++s_CoverHolds;
+            return hold;
+        }
+        ++s_AllocationFailures;
+    }
+    ReleaseManeuverCover(ped, *move);
+    if (ulw::CombatShouldWithdraw(faction, Read<float>(ped, 0x540), total) ||
+        s_GangLosses.UnderStrength(faction, origin, now)) {
+        if (auto* const run = StartWithdrawal(task, pedRef, origin, threat, now, faction)) {
+            return run;
+        }
+        return next(task, ped);
+    }
+    if (!blocked && move->phase == ulw::CombatMove::Hold) {
+        constexpr unsigned GunControl = 0x3FC;
+        return GameFunction<ArmedSubTask>(0x626FC0)(task, GunControl, ped);
+    }
+    if (blocked && move->phase == ulw::CombatMove::Hold) {
+        if (const auto destination = CombatMoveDestination(origin, threat, false, (pedRef & 1) != 0)) {
+            if (auto* const run = CreateCombatRun(*destination)) {
+                RememberCombatMove(pedRef, task, run, nullptr, *destination, now, faction, ulw::CombatMove::Peek);
+                ++s_CoverPeeks;
+                return run;
+            }
+        }
+    }
+    return next(task, ped);
 }
 
 void* __fastcall OnArmedControl(void* task, void*, void* ped) noexcept {
     const auto current = GameFunction<ArmedControl>(NativeArmedControl)(task, ped);
-    const auto* const target = Read<const void*>(task, 0x0C);
-    if (!current || current != Read<void*>(task, 0x08) || Read<std::uintptr_t>(current) != GunControlVtable ||
-        !IsPlayerPed(target) || Read<std::uint8_t>(target, 0x2F) != 0 ||
-        (Read<std::uint8_t>(target, 0x46D) & 0x07) || !StreetFighterFaction(ped) ||
-        (Read<std::uint8_t>(ped, 0x46E) & 0x70) || Read<void*>(ped, 0x788)) {
+    const auto* const target = StreetThreat(task);
+    const auto faction = StreetFighterFaction(ped);
+    if (!current || current != Read<void*>(task, 0x08) || !target || !faction ||
+        (Read<std::uint8_t>(ped, 0x46E) & 0x70)) {
         return current;
     }
     const auto now = GameValue<std::uint32_t>(0xB7CB84);
@@ -642,38 +808,67 @@ void* __fastcall OnArmedControl(void* task, void*, void* ped) noexcept {
         return current;
     }
     const auto ref = StreetPedReference(ped);
-    if (ref < 0 || !s_CombatPressure.Suppressed(static_cast<std::uint32_t>(ref), now)) {
+    if (ref < 0) {
+        return current;
+    }
+    const auto pedRef = static_cast<std::uint32_t>(ref);
+    if (s_CoverFollowup) {
+        const auto parentId = reinterpret_cast<std::uintptr_t>(task);
+        const auto childId = reinterpret_cast<std::uintptr_t>(current);
+        if (const auto move = s_CombatManeuvers.Current(pedRef, parentId, childId)) {
+            if (now - move->started <= 4200) {
+                return current;
+            }
+            ReleaseManeuverCover(ped, *move);
+            s_CombatManeuvers.Clear(pedRef);
+            return GameFunction<ArmedControl>(NativeArmedNext)(task, ped);
+        }
+        if (const auto interrupted = s_CombatManeuvers.TakeInterrupted(pedRef, parentId, childId)) {
+            ReleaseManeuverCover(ped, *interrupted);
+        }
+    }
+    if (Read<std::uintptr_t>(current) != GunControlVtable || Read<void*>(ped, 0x788) ||
+        !s_CombatPressure.Suppressed(pedRef, now)) {
         return current;
     }
 
     const auto origin = EntityPosition(ped);
     const auto threat = EntityPosition(target);
     if (!ulw::CombatCoverInRange(origin, threat) ||
-        !s_CombatPressure.TakeCoverSearch(static_cast<std::uint32_t>(ref), now, GameValue<std::uint32_t>(0xB7CB4C))) {
+        !s_CombatPressure.TakeCoverSearch(pedRef, now, GameValue<std::uint32_t>(0xB7CB4C))) {
+        return current;
+    }
+    const auto* const weapon = s_CoverFollowup ? StreetCombatWeapon(ped) : nullptr;
+    const bool needsWithdrawal = weapon && (ulw::CombatShouldWithdraw(faction, Read<float>(ped, 0x540),
+        Read<unsigned>(weapon, 0x0C)) || s_GangLosses.UnderStrength(faction, origin, now));
+    if (s_CoverFollowup && !needsWithdrawal && s_CombatManeuvers.AllyMoving(pedRef, faction, origin, now)) {
+        ++s_AllyWaits;
         return current;
     }
     ++s_CoverSearches;
     auto* const point = GameFunction<ReserveCover>(0x6992B0)(ped, threat, false);
-    if (!point) {
-        return current;
-    }
-
-    ulw::Point destination{};
-    if (GameFunction<CoverCoordinates>(0x699570)(point, ped, threat, destination)) {
-        destination.z += 1.0f; // Match the height adjustment in the native cover task.
-        if (SafeCoverRoute(origin, threat, destination)) {
-            if (auto* const move = GameFunction<AllocateTask>(0x61A5A0)(0x30)) {
-                auto* const path = GameFunction<RunToPoint>(0x667CD0)(move, 6, destination, 0.5f, true, false);
-                *reinterpret_cast<void**>(static_cast<std::byte*>(ped) + 0x788) = point;
-                ++s_CoverMoves;
-                // The native task manager adopts the new subtask and resumes
-                // its normal attack logic at the end of the run.
-                return path;
+    if (point) {
+        ulw::Point destination{};
+        if (GameFunction<CoverCoordinates>(0x699570)(point, ped, threat, destination)) {
+            destination.z += 1.0f; // Match the height adjustment in the native cover task.
+            if (SafeCoverRoute(origin, threat, destination)) {
+                if (auto* const run = CreateCombatRun(destination)) {
+                    *reinterpret_cast<void**>(static_cast<std::byte*>(ped) + 0x788) = point;
+                    if (s_CoverFollowup) {
+                        RememberCombatMove(pedRef, task, run, point, destination, now, faction, ulw::CombatMove::Approach);
+                    }
+                    ++s_CoverMoves;
+                    return run;
+                }
             }
-            ++s_AllocationFailures;
+        }
+        GameFunction<ReleaseCover>(0x698EF0)(point, ped);
+    }
+    if (needsWithdrawal) {
+        if (auto* const run = StartWithdrawal(task, pedRef, origin, threat, now, faction)) {
+            return run;
         }
     }
-    GameFunction<ReleaseCover>(0x698EF0)(point, ped);
     return current;
 }
 
@@ -1456,6 +1651,14 @@ void InstallCombat() noexcept {
         PatchTaskMethod(ArmedTaskVtable + 10 * sizeof(void*), NativeArmedControl,
             reinterpret_cast<std::uintptr_t>(&OnArmedControl));
     Log(cover ? "Installed: pressure-triggered cover movement." : "Skipped: armed cover task or pressure observer differs.");
+    s_CoverFollowup = cover &&
+        Matches(NativeArmedNext, Entry{0x6A, 0xFF, 0x64, 0xA1, 0, 0, 0, 0}) &&
+        Matches(0x62F310, Entry{0x56, 0x8B, 0xF1, 0xE8, 0x78, 0xB0, 0xFE, 0xFF}) &&
+        Matches(0x5E0270, Entry{0x56, 0x8B, 0xF1, 0x8B, 0x8E, 0x88, 0x07, 0x00}) &&
+        Matches(0x626FC0, Entry{0x6A, 0xFF, 0x64, 0xA1, 0, 0, 0, 0}) &&
+        PatchTaskMethod(ArmedTaskVtable + 8 * sizeof(void*), NativeArmedNext,
+            reinterpret_cast<std::uintptr_t>(&OnArmedNext));
+    Log(s_CoverFollowup ? "Installed: cover holds, lateral moves and withdrawals." : "Skipped: armed follow-up task differs.");
 }
 
 void InstallCity() noexcept {
@@ -1508,7 +1711,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.11.0");
+    Log("Ultimate Living World 0.12.0");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");

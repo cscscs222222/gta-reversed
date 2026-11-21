@@ -405,6 +405,70 @@ void TestCombatCover() {
     Check(!pressure.TakeCoverSearch(replacement, 6701, 8), "mission transitions must clear pending cover searches");
 }
 
+void TestCombatManeuvers() {
+    constexpr unsigned Ballas = 7;
+    constexpr unsigned Grove = 8;
+    constexpr unsigned Vagos = 9;
+    const auto ballas = ulw::CombatCoverHold(Ballas, 10, 50, 0);
+    const auto grove = ulw::CombatCoverHold(Grove, 10, 50, 0);
+    const auto vagos = ulw::CombatCoverHold(Vagos, 10, 50, 0);
+    Check(ballas < grove && grove < vagos, "gangs should return fire at different tempos");
+    Check(ulw::CombatCoverHold(Ballas, 0, 30, 1400) == 1400 &&
+        ulw::CombatCoverHold(Ballas, 2, 30, 0) > ballas &&
+        ulw::CombatCoverHold(Ballas, 0, 30, 6000) == 1900 &&
+        ulw::CombatCoverHold(Ballas, 0, 0, 6000) == ballas,
+        "available reloads must extend time behind cover within a fixed limit");
+    Check(ulw::CombatShouldWithdraw(Vagos, 24, 13) && !ulw::CombatShouldWithdraw(Ballas, 24, 13) &&
+        ulw::CombatShouldWithdraw(Grove, 75, 0) && !ulw::CombatShouldWithdraw(4, 15, 0) &&
+        !ulw::CombatShouldWithdraw(Grove, 0, 0), "withdrawal should reflect faction, health and ammunition");
+
+    ulw::CombatManeuvers memory;
+    using ulw::CombatMove;
+    constexpr std::uint32_t fighter = 0x301;
+    constexpr std::uint32_t ally = 0x401;
+    constexpr std::uint32_t replacement = 0x302;
+    constexpr ulw::Point destination{9, 0, 1};
+    memory.Start(fighter, {0x1000, 0x1100, 0x1200, destination, 1000, Grove, CombatMove::Approach});
+    Check(memory.Current(fighter, 0x1000, 0x1100)->phase == CombatMove::Approach &&
+        !memory.Current(fighter, 0x1000, 0x1110) && !memory.Current(fighter, 0x1020, 0x1100) &&
+        !memory.Current(replacement, 0x1000, 0x1100), "cover transitions must match ped generation and both native tasks");
+    Check(memory.AllyMoving(ally, Grove, {0, 0, 1}, 3000) &&
+        !memory.AllyMoving(ally, Grove, {0, 0, 1}, 3100) &&
+        !memory.AllyMoving(ally, Grove, {30, 0, 1}, 1000) &&
+        !memory.AllyMoving(ally, Ballas, {0, 0, 1}, 1000) &&
+        !memory.AllyMoving(replacement, Grove, {0, 0, 1}, 1000),
+        "only a nearby, recent movement by another member of the same faction should stagger movement");
+    memory.Start(fighter, {0x1000, 0x1300, 0x1200, destination, 2500, Grove, CombatMove::Hold});
+    Check(!memory.Current(fighter, 0x1000, 0x1100) &&
+        memory.Current(fighter, 0x1000, 0x1300)->cover == 0x1200, "the hold replaces the approach and retains its reservation");
+    memory.Clear(replacement);
+    Check(memory.Current(fighter, 0x1000, 0x1300).has_value(), "a stale clear must not delete another generation");
+    Check(!memory.TakeInterrupted(replacement, 0x1000, 0x1400) &&
+        !memory.TakeInterrupted(fighter, 0x1000, 0x1300), "unrelated and current tasks must keep their reservations");
+    const auto abandoned = memory.TakeInterrupted(fighter, 0x1000, 0x1400);
+    Check(abandoned && abandoned->cover == 0x1200 && !memory.AllyMoving(ally, Grove, destination, 2600),
+        "a new subtask must return the interrupted reservation and free its local movement turn");
+    memory.Start(fighter, {0x1000, 0x1400, 0, destination, 2600, Grove, CombatMove::Peek});
+    memory.Reset();
+    Check(!memory.Current(fighter, 0x1000, 0x1400), "mission transitions must discard tracked actions");
+
+    ulw::GangLosses losses;
+    Check(!losses.Record(0x201, 6, destination, 1000), "police must not follow gang morale");
+    Check(losses.Record(fighter, Grove, destination, 1000) &&
+        !losses.Record(fighter, Grove, destination, 1005) &&
+        !losses.UnderStrength(Grove, destination, 1006), "duplicate death events must count once");
+    Check(losses.Record(ally, Grove, {11, 0, 1}, 1900) && losses.UnderStrength(Grove, destination, 2000) &&
+        !losses.UnderStrength(Grove, {9, 0, 5}, 2000) && !losses.UnderStrength(Grove, {35, 0, 1}, 2000) &&
+        !losses.UnderStrength(Vagos, destination, 2000), "only recent casualties near the same faction should count");
+    Check(losses.UnderStrength(Grove, destination, 10999) && !losses.UnderStrength(Grove, destination, 11000),
+        "losing a nearby fight must have a bounded effect on morale");
+    Check(losses.Record(0x601, Ballas, destination, 11000) && losses.Record(0x701, Ballas, destination, 11300) &&
+        !losses.UnderStrength(Ballas, destination, 11300) && losses.Record(0x801, Ballas, destination, 11400) &&
+        losses.UnderStrength(Ballas, destination, 11400), "Ballas should tolerate more losses before falling back");
+    losses.Reset();
+    Check(!losses.UnderStrength(Ballas, destination, 11500), "missions must clear gang casualty reports");
+}
+
 void TestVehicleDamageAndCooling() {
     const ulw::WheelForces native{0.2f, 0.3f, 0.2f};
     ulw::RoadPhysics road;
@@ -571,6 +635,8 @@ int wmain(int argc, wchar_t** argv) {
         std::puts("Combat: aiming profiles, burst limits, timed suppression and ped slot reuse passed.");
         TestCombatCover();
         std::puts("Combat cover: approach limits, search budgets, cooldown and slot reuse passed.");
+        TestCombatManeuvers();
+        std::puts("Combat maneuvers: faction tempo, ammunition, withdrawal, ally timing and gang losses passed.");
         TestCityActivity();
         std::puts("City: rush hour, regional nightlife and weather schedules passed.");
         if (argc == 2) {

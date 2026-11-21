@@ -191,6 +191,56 @@ std::uint16_t CombatBurstLength(std::uint16_t native, unsigned clip, unsigned fa
     bool suppressed) noexcept;
 bool CombatCoverInRange(Point fighter, Point threat) noexcept;
 bool CombatCoverApproach(Point fighter, Point threat, Point destination) noexcept;
+unsigned CombatCoverHold(unsigned faction, unsigned clip, unsigned total, unsigned reloadRemaining) noexcept;
+bool CombatShouldWithdraw(unsigned faction, float health, unsigned totalAmmo) noexcept;
+
+enum class CombatMove : std::uint8_t { Approach, Hold, Peek, Withdraw };
+
+struct CombatManeuver {
+    std::uintptr_t parent;
+    std::uintptr_t child;
+    std::uintptr_t cover;
+    Point destination;
+    std::uint32_t started;
+    unsigned faction;
+    CombatMove phase;
+};
+
+class CombatManeuvers {
+public:
+    void Start(std::uint32_t ped, CombatManeuver move) noexcept;
+    std::optional<CombatManeuver> Current(std::uint32_t ped, std::uintptr_t parent,
+        std::uintptr_t child) const noexcept;
+    std::optional<CombatManeuver> TakeInterrupted(std::uint32_t ped, std::uintptr_t parent,
+        std::uintptr_t child) noexcept;
+    bool AllyMoving(std::uint32_t ped, unsigned faction, Point origin, std::uint32_t now) const noexcept;
+    void Clear(std::uint32_t ped) noexcept;
+    void Reset() noexcept;
+
+private:
+    struct Slot {
+        std::uint32_t ped{};
+        std::optional<CombatManeuver> move{};
+    };
+    std::array<Slot, 256> m_Entries{};
+};
+
+class GangLosses {
+public:
+    bool Record(std::uint32_t ped, unsigned faction, Point position, std::uint32_t now) noexcept;
+    bool UnderStrength(unsigned faction, Point position, std::uint32_t now) const noexcept;
+    void Reset() noexcept;
+
+private:
+    struct Loss {
+        std::uint32_t ped{};
+        unsigned faction{};
+        Point position{};
+        std::uint32_t at{};
+    };
+    std::array<Loss, 32> m_Recent{};
+    std::size_t m_Next{};
+};
 
 class CombatPressure {
 public:

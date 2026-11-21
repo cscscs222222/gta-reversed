@@ -1,4 +1,4 @@
-# Ultimate Living World 0.11.0
+# Ultimate Living World 0.12.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
@@ -11,7 +11,7 @@ Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 | Trafik | Sivil sürücüler yağmur, sis, gece ve çarpışma nedeniyle yavaşlayabilir. Sirenli aracın gerçekten yaklaşıp yaklaşmadığı, rotaların kesişmesi ve araçların aynı seviyede olması hesaba katılır. Olay yerinde duran ekiplere doğru giden trafik de yavaşlayabilir. |
 | Acil servis | Ambulans ve itfaiye ekipleri, oyun tarafından belirlenen olay yerine yaklaşırken hızlarını daha erken düşürür. Islak zeminde ve siste fren daha erken başlar. Oyunun rota ve ekip görevleri kullanılır. |
 | Araç fiziği | Oyuncunun serbest dolaşımda kullandığı otomobil ve motosikletlerin tutuşu, frenleri ve çekişi yol ve hasar durumuna göre değişir. Düşük hızda uzun süre tam gaz kalan hasarlı motor daha çabuk ısınır ve geçici güç kaybeder. Otomobilin hasarlı çamurluğu veya tamponu yakınındaki tekerlekleri etkiler. |
-| Çatışma | Sağlıklı polis ve çete üyeleri otomatik silahlarla daha uzun seriler ateşler. Aynı NPC kısa aralıklarla vurulduğunda isabeti geçici olarak düşer ve serileri kısalır. Açıkta kalan silahlı NPC, oyun yakın ve ulaşılabilir bir siper noktası sunarsa oraya koşabilir. Koruma ve yaklaşma yolu oyunun çarpışma verisinden kontrol edilir. |
+| Çatışma | Art arda vurulan silahlı polis ve çete üyeleri kısa serilere geçer, uygun siper arar ve güvenli bir noktaya ulaşınca kısa süre bekler. Cephane azalırsa veya silah şarjör değiştiriyorsa bekleme uzayabilir. Bir yanda ateş hattı açılırsa NPC o tarafa ilerleyebilir. Ağır yaralanan veya cephanesi tükenen NPC uygun bir yoldan kısa süre geri çekilebilir. |
 | Şehir | Trafik ve sivil yaya yoğunluğu saat, gün, bölge ve hava durumuna göre değişir. Mevcut durakların, bankların, yiyecek noktalarının ve yağmur barınaklarının kullanımı bu koşullara uyarlanır. Bazı yayalar hafta içi yoğun saatlerde veya yağmurda daha hızlı ilerler. Sokakta konuşma eğilimi de saate, şehre ve yağmura göre değişir. |
 | Görevler | ULW görev işaretlerini ve motorun çalışan görev betiğini izler. Görevlerde, ara sahnelerde ve görev sonu toparlanma sırasında yeni dünya davranışlarını askıya alır. |
 
@@ -49,6 +49,8 @@ Ambulans veya itfaiye serbest dolaşımda bir olaya gelirken yavaşlamasını ve
 Çatışma değişikliklerini denemek için serbest dolaşımda bir bölge savaşında AK-47 veya Micro Uzi taşıyan bir düşmanla karşılaş. Düşmanın ilk atış serilerini ve peş peşe iki isabetten sonraki serilerini karşılaştır. Günlükte `extendedBursts` uzatılan serileri, `shorterBursts` kısaltılanları ve `suppressionHits` baskıyı başlatan veya uzatan isabetleri sayar. `Combat=0` bu davranışları ve isabet ayarını kapatır.
 
 Siper aramayı denemek için dış mekânda duvar köşesi veya duran bir aracın yakınında, yaklaşık 10–20 metre uzaktaki silahlı bir düşmana onu öldürmeden iki kez isabet ettir. `coverSearches` yapılan aramaları, `coverMoves` ise hareket görevi verilen NPC'leri sayar. Bu sürüm oyunun mevcut siper noktalarını kullanır. Hareketin sahada nasıl göründüğünün doğrulanması için oyun testi gerekir.
+
+Bölge savaşında aynı çeteden iki düşman birbirine yakınken birinin yer değiştirmesini ve diğerinin olağan çatışma davranışını sürdürmesini gözle. Ballas siperde daha kısa bekler ve yakın kayıplara daha uzun süre dayanır. Grove Street ve Vagos siperde daha uzun kalır. Kısa sürede birkaç yakın kayıp veren çetenin baskı altındaki üyeleri, uygun bir yol varsa geri çekilebilir. `coverHolds`, `coverPeeks`, `tacticalWithdrawals`, `allyWaits` ve `gangCasualties` sayaçlarını günlükten izle. Oyun, silahın şarjör değiştirme animasyonunu ve cephane miktarını yönetir.
 
 Günlük oyun zamanı ilerledikçe NPC kaçışı, devriye rotaları, hava araması, barikat yerleşim denemeleri, kazaya bağlı yavaşlama ve etkinlik noktalarının kullanımını sayar. `AirSupport` ve `Roadblocks` ayarları yeni sistemleri ayrı ayrı kapatır. Farklı bir ASI aynı oyun çağrısını önceden değiştirmişse Ultimate Living World ilgili bağlantıyı atlar ve durumu kaydeder. ASI değişikliklerini oyun kapalıyken yap.
 
