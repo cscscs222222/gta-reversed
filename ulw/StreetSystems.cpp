@@ -407,33 +407,58 @@ std::uint8_t CombatAccuracy(std::uint8_t native, unsigned faction, float health,
     return static_cast<std::uint8_t>(std::clamp(static_cast<float>(native) + adjustment, 1.0f, 100.0f));
 }
 
+float PanelWearAtWheel(std::uint32_t panels, int wheel) noexcept {
+    constexpr std::array<unsigned, 4> panelForWheel{0, 2, 1, 3};
+    if (wheel < 0 || wheel >= 4) {
+        return 0.0f;
+    }
+    const auto wing = (panels >> (4 * panelForWheel[static_cast<unsigned>(wheel)])) & 0xFu;
+    const auto bumper = (panels >> ((wheel % 2 == 0) ? 20 : 24)) & 0xFu;
+    return 0.82f * Unit((static_cast<float>(wing) - 1.0f) / 3.0f) +
+        0.18f * Unit((static_cast<float>(bumper) - 1.0f) / 3.0f);
+}
+
 WheelForces RoadPhysics::Tune(WheelForces forces, const RoadConditions& conditions) noexcept {
     if (!(conditions.mass > 0.0f) || conditions.speedSquared < 0.0f ||
         !std::isfinite(conditions.speedSquared) || !std::isfinite(conditions.health)) {
         return forces;
     }
-    auto& brakes = m_Brakes[(conditions.vehicle >> 8) % m_Brakes.size()];
-    if (!brakes.occupied || brakes.vehicle != conditions.vehicle || conditions.now - brakes.at > 3000) {
-        brakes = {conditions.vehicle, conditions.now, 0.0f, true};
+    auto& heat = m_Heat[(conditions.vehicle >> 8) % m_Heat.size()];
+    if (!heat.occupied || heat.vehicle != conditions.vehicle || conditions.now - heat.at > 30000 ||
+        (conditions.health >= 850.0f && conditions.health - heat.lastHealth > 90.0f)) {
+        heat = {conditions.vehicle, conditions.now, 0.0f, 0.0f, conditions.health, true};
     }
-    const auto interval = std::min(conditions.now - brakes.at, 100u);
+    const auto elapsed = conditions.now - heat.at;
+    const auto interval = std::min(elapsed, 100u);
+    const auto idle = static_cast<float>(elapsed - interval);
+    const auto tick = static_cast<float>(interval);
     const auto severity = Unit(conditions.brakePedal) * Unit(conditions.speedSquared / 0.45f);
     const auto heavy = Unit((conditions.mass - 1350.0f) / 3000.0f);
     const auto wear = Unit((650.0f - conditions.health) / 400.0f);
-    brakes.heat = Unit(brakes.heat + static_cast<float>(interval) *
-        (severity * (0.00026f + heavy * 0.00020f) - 0.000075f));
-    brakes.at = conditions.now;
+    const auto damage = std::max(wear, Unit((static_cast<float>(conditions.engineDamage) - 75.0f) / 150.0f));
+    const auto airflow = Unit(conditions.speedSquared / 0.5f);
+    const auto load = Unit((std::abs(conditions.throttle) - 0.55f) / 0.45f);
+    heat.brakeHeat = Unit(heat.brakeHeat + tick * (severity * (0.00026f + heavy * 0.00020f) - 0.000075f) - idle * 0.00012f);
+    const auto heating = load * (0.00011f + damage * 0.00021f) * (1.0f - 0.67f * airflow);
+    const auto cooling = 0.000058f + airflow * 0.000055f + (1.0f - load) * 0.000036f;
+    heat.engineHeat = Unit(heat.engineHeat + tick * (heating - cooling) - idle * 0.000075f);
+    heat.at = conditions.now;
+    heat.lastHealth = conditions.health;
+
+    const auto panel = Unit(conditions.panelWear);
     const auto wet = Unit(conditions.wet);
+    const auto rainGrip = conditions.motorcycle ? 0.16f : 0.11f + 0.035f * heavy;
     if (!conditions.burstTyre) {
-        forces.grip *= 1.0f - wet * (0.11f + 0.035f * heavy) - 0.065f * wear;
+        forces.grip *= 1.0f - wet * rainGrip - 0.065f * wear - 0.10f * panel;
     }
-    forces.brake *= 1.0f - brakes.heat * (0.075f + 0.055f * heavy) - 0.07f * wear;
-    forces.thrust *= 1.0f - 0.20f * wear;
+    forces.brake *= 1.0f - heat.brakeHeat * (0.075f + 0.055f * heavy) - 0.07f * wear - 0.06f * panel;
+    const auto overheat = Unit((heat.engineHeat - 0.48f) / 0.52f);
+    forces.thrust *= 1.0f - 0.20f * damage - 0.26f * overheat;
     return forces;
 }
 
 void RoadPhysics::Reset() noexcept {
-    m_Brakes = {};
+    m_Heat = {};
 }
 
 }

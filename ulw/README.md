@@ -1,4 +1,4 @@
-# Ultimate Living World 0.7.0
+# Ultimate Living World 0.8.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
@@ -9,7 +9,7 @@ Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 | Hava desteği | Serbest dolaşımda polis helikopteri görüş bilgisini devriyelerle paylaşır. Görüş kesilince son bildirilen bölgeyi tarar. Gece projektörü tarama konumuna yönelir. |
 | Barikatlar | Oyunun dinamik barikat adayları yol genişliği, araç hızı, takip bilgisi ve kamera görüşüne göre elenir. Oyun yol geometrisini ve barikat araçlarını kendi yönetir. |
 | Trafik | Sivil sürücüler yağmur, sis, gece, çarpışma veya arkadan yaklaşan siren nedeniyle yavaşlayabilir. Ağır çarpışmadan sonra duran araçlar aynı seviyede arkadan yaklaşan trafiği de yavaşlatabilir. Mevcut kırmızı ışık ve trafik sınırları uygulanmaya devam eder. |
-| Otomobiller | Islak yol ve ağır hasar yol tutuşunu azaltır. Uzun süreli sert frenleme fren etkisini, ağır hasar da aracın çekişini düşürebilir. |
+| Araç fiziği | Oyuncunun serbest dolaşımda kullandığı otomobil ve motosikletlerin tutuşu, frenleri ve çekişi yol ve hasar durumuna göre değişir. Düşük hızda uzun süre tam gaz kalan hasarlı motor daha çabuk ısınır ve geçici güç kaybeder. Otomobilin hasarlı çamurluğu veya tamponu yakınındaki tekerlekleri etkiler. |
 | Çatışma | Uygun serbest dolaşım karşılaşmalarında oyuncuya ateş eden polis ve çete üyelerinin isabeti mesafe, aydınlık, hava ve can durumuna göre değişir. Açık havada yakın çatışmalar zorlaşır. |
 | Şehir | Trafik ve sivil yaya yoğunluğu saat, gün, bölge ve hava durumuna göre değişir. Mevcut durakların, bankların, yiyecek noktalarının ve yağmur barınaklarının kullanımı bu koşullara uyarlanır. Bazı yayalar hafta içi yoğun saatlerde veya yağmurda daha hızlı ilerler. Sokakta konuşma eğilimi de saate, şehre ve yağmura göre değişir. |
 | Görevler | ULW görev işaretlerini ve motorun çalışan görev betiğini izler. Görevlerde, ara sahnelerde ve görev sonu toparlanma sırasında yeni dünya davranışlarını askıya alır. |
@@ -40,6 +40,8 @@ Görevi başlattığında `scripts\UltimateLivingWorld.log` içinde `Mission pro
 Windows derlemesi sivil tepkileri, yaya temposunu, kaza tanığı belleğini, kazadan sonra duran araçların yaya rotalarına etkisini, kara ve hava devriyelerini, barikatları, araç davranışını ve görev geçişlerini otomatik olarak test eder. Windows test süreci ASI’yi yükler ve bağlantıların oyun dışı bir süreçte devre dışı kaldığını kontrol eder.
 
 Yeni yaya davranışını görmek için serbest dolaşımda yakındaki bir sivil otomobil ağır çarpışmadan sonra kaldırıma yakın durduğunda yayaları gözle. Ayrı bir denemede açık hava ile yağmurda sokaktaki yürüme hızını ve konuşma sıklığını karşılaştır. Günlükteki `crashGlances` ve `crashReroutes` sayaçları bu kararların çalışıp çalışmadığını gösterir. Oyun içi testler bekliyor.
+
+Araçları denemek için serbest dolaşımda aynı motosikletle kuru ve ıslak yolda fren yap. Hasarlı bir otomobilde düşük hızda uzun süre gaz verdikten sonra hızlanmayı dene. Ardından gazı azaltıp motorun soğumasını bekle. Windows testleri ısınma, soğuma, tamir sonrası sıfırlama ve bölgesel hasar hesaplarını kapsar.
 
 Günlük oyun zamanı ilerledikçe NPC kaçışı, devriye rotaları, hava araması, barikat yerleşim denemeleri, kazaya bağlı yavaşlama ve etkinlik noktalarının kullanımını sayar. `AirSupport` ve `Roadblocks` ayarları yeni sistemleri ayrı ayrı kapatır. Farklı bir ASI aynı oyun çağrısını önceden değiştirmişse Ultimate Living World ilgili bağlantıyı atlar ve durumu kaydeder. ASI değişikliklerini oyun kapalıyken yap.
 

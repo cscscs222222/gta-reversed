@@ -72,6 +72,8 @@ using PedLookTimer = void(__thiscall*)(void*, std::uint32_t);
 using FireWeapon = bool(__thiscall*)(void*, void*, const void*, const void*, const void*, const void*, const void*);
 using ProcessWheel = void(__thiscall*)(void*, void*, void*, void*, void*, int, float, float, float,
     std::int8_t, float*, std::int32_t*, std::uint16_t);
+using ProcessBikeWheel = void(__thiscall*)(void*, void*, void*, void*, void*, int, float, float, float, float,
+    std::int8_t, float*, std::int32_t*, std::int32_t, std::uint16_t);
 
 ulw::IntelligenceCore s_Core{};
 ulw::MissionState s_Missions{};
@@ -861,24 +863,43 @@ float __cdecl OnTrafficSpeed(void* car) noexcept {
     return adjusted;
 }
 
+ulw::WheelForces TunePlayerWheel(const void* vehicle, ulw::WheelForces forces, int wheel,
+    bool damagedTyre, bool motorcycle) noexcept {
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    const auto type = motorcycle ? 9 : 0;
+    if (!StreetActive(now) || Read<std::int32_t>(vehicle, 0x594) != type || Read<std::uint8_t>(vehicle, 0x2F) != 0 ||
+        Read<std::int8_t>(vehicle, 0x424) >= 0 || Read<std::uint8_t>(vehicle, 0x4A4) == 2 ||
+        (Read<std::uint8_t>(vehicle, 0x36) >> 3) != 0 || !GameValue<void*>(VehiclePool)) {
+        return forces;
+    }
+    const auto ref = GameFunction<PedReference>(0x54FFC0)(vehicle);
+    if (ref < 0 || (ref & 0x80)) {
+        return forces;
+    }
+    const auto speed = Read<ulw::Point>(vehicle, 0x44);
+    const auto wear = motorcycle ? 0.0f : ulw::PanelWearAtWheel(Read<std::uint32_t>(vehicle, 0x5B4), wheel);
+    const auto engineDamage = motorcycle ? std::uint8_t{} : Read<std::uint8_t>(vehicle, 0x5A4);
+    return s_RoadPhysics.Tune(forces, {
+        static_cast<std::uint32_t>(ref), now, Read<float>(vehicle, 0x8C), Read<float>(vehicle, 0x4C0),
+        GameValue<float>(0xC81308), ulw::DistanceSquared(speed, {}), Read<float>(vehicle, 0x4A0), damagedTyre,
+        Read<float>(vehicle, 0x49C), wear, engineDamage, motorcycle,
+    });
+}
+
 void __fastcall OnWheel(void* car, void*, void* forward, void* right, void* contactSpeed, void* contact,
     int wheels, float thrust, float brake, float grip, std::int8_t wheel, float* wheelSpeed,
     std::int32_t* wheelState, std::uint16_t status) noexcept {
-    ulw::WheelForces forces{thrust, brake, grip};
-    const auto now = GameValue<std::uint32_t>(0xB7CB84);
-    if (StreetActive(now) && IsRoadCar(car) && Read<std::uint8_t>(car, 0x4A4) != 2 &&
-        (Read<std::uint8_t>(car, 0x36) >> 3) == 0 && GameValue<void*>(VehiclePool)) {
-        const auto ref = GameFunction<PedReference>(0x54FFC0)(car);
-        if (ref >= 0 && !(ref & 0x80)) {
-            const auto speed = Read<ulw::Point>(car, 0x44);
-            forces = s_RoadPhysics.Tune(forces, {
-                static_cast<std::uint32_t>(ref), now, Read<float>(car, 0x8C), Read<float>(car, 0x4C0),
-                GameValue<float>(0xC81308), ulw::DistanceSquared(speed, {}), Read<float>(car, 0x4A0), status != 0,
-            });
-        }
-    }
+    const auto forces = TunePlayerWheel(car, {thrust, brake, grip}, wheel, status != 0, false);
     GameFunction<ProcessWheel>(0x6D6C00)(car, forward, right, contactSpeed, contact, wheels,
         forces.thrust, forces.brake, forces.grip, wheel, wheelSpeed, wheelState, status);
+}
+
+void __fastcall OnBikeWheel(void* bike, void*, void* forward, void* right, void* contactSpeed, void* contact,
+    int wheels, float thrust, float brake, float grip, float destabilize, std::int8_t wheel, float* wheelSpeed,
+    std::int32_t* wheelState, std::int32_t special, std::uint16_t status) noexcept {
+    const auto forces = TunePlayerWheel(bike, {thrust, brake, grip}, wheel, status != 0, true);
+    GameFunction<ProcessBikeWheel>(0x6D73B0)(bike, forward, right, contactSpeed, contact, wheels,
+        forces.thrust, forces.brake, forces.grip, destabilize, wheel, wheelSpeed, wheelState, special, status);
 }
 
 bool CivilianActive(std::uint32_t now) noexcept {
@@ -1168,6 +1189,13 @@ bool InstallPhysics() noexcept {
             reinterpret_cast<std::uintptr_t>(&OnWheel));
 }
 
+bool InstallMotorcyclePhysics() noexcept {
+    return VehicleQueriesMatch() &&
+        Matches(0x6B9250, Entry{0x6A, 0xFF, 0x68, 0xEB, 0x82, 0x84, 0x00, 0x64}) &&
+        Matches(0x6D73B0, Entry{0x83, 0xEC, 0x40, 0xD9, 0x05, 0x50, 0x8B, 0x85}) &&
+        PatchCalls({0x6BAF3D, 0x6BB4C1, 0x6BB855}, 0x6D73B0, reinterpret_cast<std::uintptr_t>(&OnBikeWheel));
+}
+
 bool InstallCombat() noexcept {
     return Matches(0x742300, Entry{0x83, 0xEC, 0x3C, 0x53, 0x56, 0x57, 0x8B, 0xF1}) &&
         Matches(0x73FBFD, std::array<std::uint8_t, 7>{0x0F, 0xB6, 0x97, 0x1A, 0x07, 0, 0}) &&
@@ -1224,7 +1252,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.7.0");
+    Log("Ultimate Living World 0.8.0");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");
@@ -1255,7 +1283,8 @@ void Install(const std::filesystem::path& config) noexcept {
         Log(traffic ? "Installed: traffic speed limits." : "Skipped: traffic speed function differs.");
     }
     if (GetPrivateProfileIntW(L"Modules", L"VehiclePhysics", 1, config.c_str())) {
-        Log(InstallPhysics() ? "Installed: road grip and braking." : "Skipped: wheel call sites differ.");
+        Log(InstallPhysics() ? "Installed: automobile grip, damage and heat." : "Skipped: automobile wheel call sites differ.");
+        Log(InstallMotorcyclePhysics() ? "Installed: motorcycle grip and heat." : "Skipped: motorcycle wheel call sites differ.");
     }
     if (GetPrivateProfileIntW(L"Modules", L"Combat", 1, config.c_str())) {
         Log(InstallCombat() ? "Installed: police and gang aiming profiles." : "Skipped: weapon function differs.");

@@ -294,6 +294,65 @@ void TestCombat() {
     Check(ulw::CombatAccuracy(0, 7, 100, 36, 0, 0, 12) == 0, "intentional misses must remain native");
 }
 
+void TestVehicleDamageAndCooling() {
+    const ulw::WheelForces native{0.2f, 0.3f, 0.2f};
+    ulw::RoadPhysics road;
+    ulw::RoadConditions vehicle{0x501, 1000, 1300, 430, 0, 0.03f, 0, false};
+    vehicle.throttle = 1.0f;
+    vehicle.engineDamage = 160;
+    const auto cold = road.Tune(native, vehicle);
+    for (vehicle.now += 50; vehicle.now <= 12000; vehicle.now += 50) {
+        road.Tune(native, vehicle);
+    }
+    const auto hot = road.Tune(native, vehicle);
+    Check(hot.thrust < cold.thrust * 0.9f, "a damaged engine should deliver less power under prolonged low-speed load");
+    Check(road.Tune(native, vehicle).thrust == hot.thrust, "engine heat must advance only once at the same timestamp");
+    auto repaired = vehicle;
+    repaired.health = 1000.0f;
+    repaired.engineDamage = 0;
+    const auto restored = road.Tune(native, repaired);
+    Check(restored.thrust == native.thrust, "repairing the car should reset its heat and power loss");
+
+    road.Reset();
+    vehicle.now = 1000;
+    for (; vehicle.now <= 12000; vehicle.now += 50) {
+        road.Tune(native, vehicle);
+    }
+    vehicle.throttle = 0;
+    vehicle.speedSquared = 0.55f;
+    for (; vehicle.now < 22000; vehicle.now += 50) {
+        road.Tune(native, vehicle);
+    }
+    Check(road.Tune(native, vehicle).thrust == cold.thrust, "light throttle and airflow should recover heat-related performance");
+
+    vehicle.health = 1000;
+    vehicle.engineDamage = 0;
+    vehicle.wet = 1;
+    const auto wetCar = road.Tune(native, vehicle);
+    vehicle.vehicle = 0x502;
+    vehicle.motorcycle = true;
+    const auto wetBike = road.Tune(native, vehicle);
+    Check(wetBike.grip < wetCar.grip, "intact motorcycle tyres should be more sensitive to wet roads");
+    vehicle.burstTyre = true;
+    Check(road.Tune(native, vehicle).grip == native.grip, "a burst motorcycle tyre must retain native slide behavior");
+
+    constexpr std::uint32_t brokenLeftWing = 4;
+    constexpr std::uint32_t brokenRearBumper = 4u << 24;
+    Check(ulw::PanelWearAtWheel(brokenLeftWing, 0) > 0 && ulw::PanelWearAtWheel(brokenLeftWing, 2) == 0,
+        "left wing damage should affect only the nearby wheel");
+    Check(ulw::PanelWearAtWheel(brokenRearBumper, 1) == ulw::PanelWearAtWheel(brokenRearBumper, 3) &&
+        ulw::PanelWearAtWheel(brokenRearBumper, 3) > 0 && ulw::PanelWearAtWheel(brokenRearBumper, 0) == 0 &&
+        ulw::PanelWearAtWheel(brokenRearBumper, 4) == 0, "rear bumper damage should only affect the rear axle");
+    vehicle.vehicle = 0x503;
+    vehicle.motorcycle = false;
+    vehicle.burstTyre = false;
+    vehicle.wet = 0;
+    vehicle.panelWear = ulw::PanelWearAtWheel(brokenLeftWing, 0);
+    const auto localDamage = road.Tune(native, vehicle);
+    Check(localDamage.grip < native.grip && localDamage.brake < native.brake && localDamage.thrust == native.thrust,
+        "regional body damage should limit local braking and grip without directly reducing engine power");
+}
+
 void TestCityActivity() {
     const auto laRush = ulw::AmbientActivity(8, 3, 1, 0, 0);
     const auto laLate = ulw::AmbientActivity(23, 3, 1, 0, 0);
@@ -389,6 +448,8 @@ int wmain(int argc, wchar_t** argv) {
         TestTrafficAndPhysics();
         std::puts("Pedestrians: routine timing, witness memory, and crash-aware footpaths passed.");
         std::puts("Street systems: police search and reports, traffic limits, wet grip and brake fade passed.");
+        TestVehicleDamageAndCooling();
+        std::puts("Vehicles: engine load, cooling, repair, local damage and motorcycle grip passed.");
         TestAirSupportAndRoadblocks();
         std::puts("Police support: air and ground reports, search routes and roadblock placement passed.");
         TestMissionProtection();

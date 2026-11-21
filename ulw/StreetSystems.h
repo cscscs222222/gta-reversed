@@ -174,6 +174,8 @@ struct WheelForces {
     float grip;
 };
 
+float PanelWearAtWheel(std::uint32_t panels, int wheel) noexcept;
+
 struct RoadConditions {
     std::uint32_t vehicle;
     std::uint32_t now;
@@ -183,6 +185,10 @@ struct RoadConditions {
     float speedSquared;
     float brakePedal;
     bool burstTyre;
+    float throttle{};
+    float panelWear{};
+    std::uint8_t engineDamage{};
+    bool motorcycle{};
 };
 
 class RoadPhysics {
@@ -191,13 +197,15 @@ public:
     void Reset() noexcept;
 
 private:
-    struct Brakes {
+    struct VehicleHeat {
         std::uint32_t vehicle{};
         std::uint32_t at{};
-        float heat{};
+        float brakeHeat{};
+        float engineHeat{};
+        float lastHealth{};
         bool occupied{};
     };
-    std::array<Brakes, 8> m_Brakes{};
+    std::array<VehicleHeat, 8> m_Heat{};
 };
 
 }
