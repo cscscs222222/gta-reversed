@@ -192,4 +192,113 @@ bool TuneShiftBands(std::array<GearBand, 6>& gears, unsigned count, RoadVehicle 
     return true;
 }
 
+Aircraft ClassifyAircraft(std::uint16_t model, bool helicopter) noexcept {
+    if (helicopter) {
+        return model == 417 || model == 425 || model == 548 ? Aircraft::HeavyHelicopter : Aircraft::Helicopter;
+    }
+    switch (model) {
+    case 476: // Rustler
+    case 513: // Stuntplane
+        return Aircraft::Aerobatic;
+    case 519: // Shamal
+    case 520: // Hydra in conventional flight
+        return Aircraft::Jet;
+    case 553: // Nevada
+    case 577: // AT-400
+    case 592: // Andromada
+        return Aircraft::Transport;
+    default:
+        return Aircraft::Light;
+    }
+}
+
+FlightTuning TuneFlight(Aircraft aircraft, float forwardSpeed, float altitude, float clearance,
+    bool groundContact) noexcept {
+    if (groundContact || !std::isfinite(forwardSpeed) || !std::isfinite(altitude) ||
+        !(clearance >= 0.0f) || !std::isfinite(clearance)) {
+        return {};
+    }
+    const bool rotary = aircraft == Aircraft::Helicopter || aircraft == Aircraft::HeavyHelicopter;
+    // Blend out near the runway or helipad, including low-speed lift-off and hover.
+    const auto airborne = Unit(clearance / (rotary ? 12.0f : 19.0f));
+    const auto speed = Unit((forwardSpeed - (rotary ? 0.02f : 0.23f)) / (rotary ? 0.46f : 0.62f));
+    const auto high = Unit((altitude - 180.0f) / 280.0f);
+    if (rotary) {
+        const bool heavy = aircraft == Aircraft::HeavyHelicopter;
+        const auto weight = heavy ? 1.0f : 0.66f;
+        const auto control = airborne * (0.45f + 0.55f * speed) * weight;
+        return {1.0f - 0.18f * control, 1.0f - 0.15f * control, 1.0f - 0.13f * control,
+            1.0f + 0.16f * airborne * speed, 1.0f - airborne * speed * weight * (0.025f + 0.025f * high)};
+    }
+    const auto weight = airborne * speed;
+    const auto sweep = Unit((forwardSpeed - 0.72f) / 0.78f);
+    FlightTuning result{};
+    switch (aircraft) {
+    case Aircraft::Aerobatic:
+        result = {1.0f + weight * (0.09f - 0.10f * sweep), 1.0f + weight * (0.13f - 0.14f * sweep),
+            1.0f + weight * (0.07f - 0.16f * sweep), 1.0f + 0.07f * weight};
+        break;
+    case Aircraft::Jet:
+        result = {1.0f - weight * (0.11f + 0.10f * sweep), 1.0f - weight * 0.09f * sweep,
+            1.0f - weight * 0.15f * sweep, 1.0f + weight * 0.10f * sweep};
+        break;
+    case Aircraft::Transport:
+        result = {1.0f - weight * 0.22f, 1.0f - weight * 0.19f,
+            1.0f - weight * (0.11f + 0.07f * sweep), 1.0f + 0.14f * weight};
+        break;
+    default:
+        result = {1.0f + weight * (0.04f - 0.13f * sweep), 1.0f - weight * 0.09f * sweep,
+            1.0f - weight * 0.11f * sweep, 1.0f + 0.08f * weight};
+        break;
+    }
+    result.pitch -= 0.075f * high * weight;
+    return result;
+}
+
+Hull ClassifyHull(std::uint16_t model) noexcept {
+    switch (model) {
+    case 446: // Squalo
+    case 452: // Speeder
+    case 493: // Jetmax
+        return Hull::Speedboat;
+    case 453: // Reefer
+    case 454: // Tropic
+    case 484: // Marquis
+        return Hull::Displacement;
+    default:
+        return Hull::Utility;
+    }
+}
+
+HullTuning TuneHull(Hull hull, float forwardSpeed, float immersed, float verticalSpeed, float throttle) noexcept {
+    if (!(forwardSpeed > 0.04f) || !std::isfinite(forwardSpeed) || !(immersed > 0.015f && immersed <= 1.20f) ||
+        !std::isfinite(verticalSpeed) || !std::isfinite(throttle)) {
+        return {};
+    }
+    const auto contact = Unit((immersed - 0.015f) / 0.28f);
+    const auto motion = Unit((forwardSpeed - 0.04f) / 0.65f);
+    const auto wave = Unit(std::abs(verticalSpeed) / 0.16f);
+    const auto load = contact * motion * (1.0f - 0.58f * wave);
+    const auto planing = contact * Unit((forwardSpeed - 0.30f) / 0.52f) * Unit(throttle) * (1.0f - wave);
+    switch (hull) {
+    case Hull::Speedboat:
+        return {1.0f - 0.09f * load, 1.0f - 0.13f * load, 1.0f + 0.11f * load,
+            1.0f + 0.085f * planing};
+    case Hull::Displacement:
+        return {1.0f + 0.18f * load, 1.0f + 0.16f * load, 1.0f + 0.19f * load,
+            1.0f - 0.08f * planing};
+    default:
+        return {1.0f + 0.05f * load, 1.0f + 0.09f * load, 1.0f + 0.08f * load,
+            1.0f + 0.025f * planing};
+    }
+}
+
+float TuneResistance(float nativeRetention, float dragScale) noexcept {
+    if (!(nativeRetention > 0.0f && nativeRetention < 1.0f && dragScale >= 0.75f && dragScale <= 1.25f) ||
+        dragScale == 1.0f) {
+        return nativeRetention;
+    }
+    return std::pow(nativeRetention, dragScale);
+}
+
 }

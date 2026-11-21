@@ -65,4 +65,31 @@ float ShapeThrottle(float throttle, RoadVehicle vehicle, float grade) noexcept;
 bool TuneShiftBands(std::array<GearBand, 6>& gears, unsigned count, RoadVehicle vehicle,
     float throttle, float grade) noexcept;
 
+enum class Aircraft : std::uint8_t { Light, Aerobatic, Jet, Transport, Helicopter, HeavyHelicopter };
+
+struct FlightTuning {
+    float yaw{1.0f};
+    float roll{1.0f};
+    float pitch{1.0f};
+    float sideSlip{1.0f};
+    float thrust{1.0f};
+};
+
+Aircraft ClassifyAircraft(std::uint16_t model, bool helicopter) noexcept;
+FlightTuning TuneFlight(Aircraft aircraft, float forwardSpeed, float altitude, float clearance,
+    bool groundContact) noexcept;
+
+enum class Hull : std::uint8_t { Speedboat, Utility, Displacement };
+
+struct HullTuning {
+    float longitudinalDrag{1.0f};
+    float lateralDrag{1.0f};
+    float yawDrag{1.0f};
+    float planing{1.0f};
+};
+
+Hull ClassifyHull(std::uint16_t model) noexcept;
+HullTuning TuneHull(Hull hull, float forwardSpeed, float immersed, float verticalSpeed, float throttle) noexcept;
+float TuneResistance(float nativeRetention, float dragScale) noexcept;
+
 }

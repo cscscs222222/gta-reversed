@@ -829,6 +829,48 @@ void TestVehicleDynamics() {
         "inclines and class should shape positive gas while reverse stays native");
 }
 
+void TestAirAndWaterDynamics() {
+    using ulw::Aircraft;
+    using ulw::Hull;
+    Check(ulw::ClassifyAircraft(513, false) == Aircraft::Aerobatic &&
+        ulw::ClassifyAircraft(519, false) == Aircraft::Jet &&
+        ulw::ClassifyAircraft(577, false) == Aircraft::Transport &&
+        ulw::ClassifyAircraft(593, false) == Aircraft::Light &&
+        ulw::ClassifyAircraft(548, true) == Aircraft::HeavyHelicopter,
+        "flight profiles should separate aircraft with different cruise and control characteristics");
+    const auto aerobatic = ulw::TuneFlight(Aircraft::Aerobatic, 0.72f, 90, 60, false);
+    const auto transport = ulw::TuneFlight(Aircraft::Transport, 0.72f, 90, 60, false);
+    const auto fastJet = ulw::TuneFlight(Aircraft::Jet, 1.42f, 210, 80, false);
+    const auto highJet = ulw::TuneFlight(Aircraft::Jet, 1.42f, 430, 120, false);
+    const auto runway = ulw::TuneFlight(Aircraft::Transport, 0.72f, 18, 0.5f, true);
+    const auto approach = ulw::TuneFlight(Aircraft::Transport, 0.34f, 25, 4, false);
+    Check(aerobatic.roll > 1.0f && transport.roll < 0.90f && highJet.pitch < fastJet.pitch &&
+        highJet.thrust == 1.0f && runway.yaw == 1.0f && approach.yaw > transport.yaw &&
+        ulw::TuneFlight(Aircraft::Jet, 1.42f, 430, -1.0f, false).pitch == 1.0f,
+        "speed and altitude should adjust cruise response with stock handling at touchdown and unknown clearance");
+    const auto light = ulw::TuneFlight(Aircraft::Helicopter, 0.41f, 140, 55, false);
+    const auto heavy = ulw::TuneFlight(Aircraft::HeavyHelicopter, 0.41f, 140, 55, false);
+    const auto hover = ulw::TuneFlight(Aircraft::HeavyHelicopter, 0.0f, 20, 2, false);
+    Check(heavy.pitch < light.pitch && heavy.thrust < light.thrust && hover.yaw > heavy.yaw && hover.thrust == 1.0f,
+        "heavy helicopters should build less abrupt control and thrust with native low-speed lift");
+    Check(ulw::ClassifyHull(493) == Hull::Speedboat && ulw::ClassifyHull(453) == Hull::Displacement &&
+        ulw::ClassifyHull(472) == Hull::Utility, "native boat models should choose different hull profiles");
+    const auto racing = ulw::TuneHull(Hull::Speedboat, 0.82f, 0.35f, 0.0f, 1.0f);
+    const auto cruising = ulw::TuneHull(Hull::Displacement, 0.82f, 0.35f, 0.0f, 1.0f);
+    const auto waves = ulw::TuneHull(Hull::Speedboat, 0.82f, 0.35f, 0.18f, 1.0f);
+    Check(racing.planing > 1.0f && cruising.planing < 1.0f && waves.planing == 1.0f &&
+        waves.lateralDrag > racing.lateralDrag && racing.yawDrag > 1.0f,
+        "speedboats should plane under throttle while waves and heavier hulls limit the effect");
+    Check(ulw::TuneResistance(0.92f, racing.longitudinalDrag) > 0.92f &&
+        ulw::TuneResistance(0.92f, cruising.longitudinalDrag) < 0.92f &&
+        ulw::TuneResistance(1.03f, cruising.longitudinalDrag) == 1.03f,
+        "hull drag should preserve unrecognized retention factors");
+    const auto dry = ulw::TuneHull(Hull::Speedboat, 0.90f, 0.0f, 0.0f, 1.0f);
+    const auto reverse = ulw::TuneHull(Hull::Displacement, -0.35f, 0.40f, 0.0f, -1.0f);
+    Check(dry.planing == 1.0f && dry.lateralDrag == 1.0f && reverse.longitudinalDrag == 1.0f,
+        "grounded boats and reverse must retain the native response");
+}
+
 void TestCityActivity() {
     const auto laRush = ulw::AmbientActivity(8, 3, 1, 0, 0);
     const auto laLate = ulw::AmbientActivity(23, 3, 1, 0, 0);
@@ -936,6 +978,8 @@ int wmain(int argc, wchar_t** argv) {
         std::puts("Vehicles: engine load, cooling, repair, local damage and motorcycle grip passed.");
         TestVehicleDynamics();
         std::puts("Vehicle dynamics: surface grip, tyre heat, weight transfer, damping and bounded shift points passed.");
+        TestAirAndWaterDynamics();
+        std::puts("Air and water: flight classes, approach and hover response, hull drag and wave blending passed.");
         TestAirSupportAndRoadblocks();
         std::puts("Police support: air and ground reports, search routes and roadblock placement passed.");
         TestMissionProtection();

@@ -1,4 +1,4 @@
-# Ultimate Living World 0.16.0
+# Ultimate Living World 0.17.0
 
 Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 
@@ -11,6 +11,7 @@ Bu geliştirme sürümü klasik GTA San Andreas Hoodlum 1.0 US içindir.
 | Trafik | Sürücüler profil ve araç tipine göre farklı takip mesafesi bırakabilir. Yaklaşan dönüş ve sinyaller uygun yollarda hızı etkiler. Duran kuyruklarda tekrarlanan araç kornaları seyrekleşir. Sivil trafik yağmur, sis, kazalar ve sirenli araçlara tepki verir. |
 | Acil servis | Ambulans ve itfaiye ekipleri, oyun tarafından belirlenen olay yerine yaklaşırken hızlarını daha erken düşürür. Islak zeminde ve siste fren daha erken başlar. Oyunun rota ve ekip görevleri kullanılır. |
 | Araç fiziği | Otomobil ve motosikletlerin her tekerleği temas ettiği yüzeye, yağmura, kaymaya ve lastik sıcaklığına göre farklı tepki verir. Otomobillerde süspansiyon sert sıkışmalara ve geri sekmeye uyarlanır. Gaz tepkisi ve vites geçiş noktaları sınıfa, gaza ve eğime göre değişir. Bölgesel hasar, motor ısısı ve fren yorgunluğu da sürüşü etkiler. |
+| Uçuş ve tekneler | Hafif uçakların, jetlerin ve nakliye uçaklarının dönüş tepkileri hız ve irtifa ile değişir. Ağır helikopterler daha kademeli tepki verir. Sürat tekneleri ve ağır tekneler farklı su direnci ve su üstünde kayma tepkisi kullanır. |
 | Çatışma | Art arda vurulan silahlı polis ve çete üyeleri kısa serilere geçer, uygun siper arar ve güvenli bir noktaya ulaşınca kısa süre bekler. Cephane azalırsa veya silah şarjör değiştiriyorsa bekleme uzayabilir. Bir yanda ateş hattı açılırsa NPC o tarafa ilerleyebilir. Ağır yaralanan veya cephanesi tükenen NPC uygun bir yoldan kısa süre geri çekilebilir. |
 | Şehir | Trafik ve yaya yoğunluğu saate, güne, bölgeye ve havaya göre değişir. Uygun yayalar sabah duraklara, öğle saatinde yiyecek noktalarına, akşam bank veya merdivenlere, yağmurda sığınaklara yürüyebilir. Oyunun mevcut etkileşim noktaları ve sıra sistemi kullanılır. |
 | Görevler | ULW görev işaretlerini ve motorun çalışan görev betiğini izler. Görevlerde, ara sahnelerde ve görev sonu toparlanma sırasında yeni dünya davranışlarını askıya alır. |
@@ -48,6 +49,8 @@ Araçları denemek için serbest dolaşımda aynı motosikletle kuru ve ıslak y
 
 Yeni yol tepkilerini karşılaştırmak için aynı aracı asfalt, çim ve kumda sür. Ardından bir spor otomobil ve kamyonla aynı eğimde yarım gazdan tam gaza geç. `surfaceResponses`, `springResponses` ve `driveResponses` sırasıyla zemin, süspansiyon ve şanzıman kararlarının işlendiği çağrıları sayar. Bu davranışlar serbest dolaşımda oyuncunun kullandığı araçlara uygulanır.
 
+Serbest dolaşımda Stuntplane ve AT-400 ile kalkıp yeterli yüksekliğe ulaştığında dönüşlerini karşılaştır. Cargobob ile Maverick'i ileri uçuşta, Jetmax ile Reefer'ı açık suda dene. Uçuş ayarları piste yaklaşınca kademeli azalır. `planeResponses`, `helicopterResponses` ve `boatResponses` ilgili motor hesaplarına uygulanan ayarları sayar. Uçuş ve tekne ayarları `VehiclePhysics` seçeneğine bağlıdır.
+
 Ambulans veya itfaiye serbest dolaşımda bir olaya gelirken yavaşlamasını ve çevredeki trafiği gözle. `emergencyApproaches` olay yerine yaklaşırken değiştirilen gaz ve fren kararlarını, `emergencyYieldCalls` ise acil aracın etkisiyle düşürülen sivil hız sınırlarını sayar. `Emergency=0` acil ekiplerin yaklaşma davranışını, `Traffic=0` sivil araçlara uygulanan hız sınırlarını kapatır.
 
 Trafiği denemek için yağmurda viraja yaklaşan ağır araçları ve bir ışıkta durup yeniden hareket eden kuyruğu izle. `bendLimits`, `followingLimits` ve `queueHornSkips` sayaçları yeni kararları gösterir. Polis takibini denemek için serbest dolaşımda üç yıldızla açık bir yolda birden fazla devriye aracının seni gördüğü bir kovalamacaya gir. `interceptRoutes` yol kesme rotalarını, `patrolBraking` daha fazla takip mesafesi bırakılan kararları sayar.
@@ -66,4 +69,4 @@ Günlük oyun zamanı ilerledikçe NPC kaçışı, devriye rotaları, hava arama
 
 `build.cmd` var olan MSVC x86 ortamını kullanır ve paketi `bin/ulw/dist` altında üretir. GitHub Actions’taki **Build** iş akışı aynı adımları çalıştırır. Başarılı çalışmanın **Artifacts** bölümünde **UltimateLivingWorld** paketi çıkar. Arşivde ASI, INI, doğrulama betiği ve bu kılavuz bulunur.
 
-Belirli iş ve ev adreslerine giden bireysel NPC rotaları, yeni şehir etkinlikleri, ekonomi, diğer taşıtların fiziği ve Chaos Missions görevlerinin oyun içi uyumluluk testleri tam sürüm için bekliyor.
+Belirli iş ve ev adreslerine giden bireysel NPC rotaları, yeni şehir etkinlikleri, ekonomi ve Chaos Missions görevlerinin oyun içi uyumluluk testleri tam sürüm için bekliyor.

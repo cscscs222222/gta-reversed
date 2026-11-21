@@ -58,6 +58,9 @@ constexpr std::uintptr_t NativeWanderNext = 0x674140;
 constexpr std::uintptr_t NativeWanderFirst = 0x6740E0;
 constexpr std::uintptr_t WalkPointVtable = 0x86FD50;
 constexpr std::uintptr_t SurfaceFlags = 0xB795CC;
+constexpr std::uintptr_t NativeFlight = 0x6D85F0;
+constexpr std::uintptr_t NativeBoat = 0x6DBCE0;
+constexpr std::size_t FlightHandlingOffset = 0x388;
 constexpr std::uint32_t Walking = 4;
 constexpr std::uint32_t Jogging = 5;
 constexpr std::uint32_t Running = 6;
@@ -125,6 +128,8 @@ using ProcessWheel = void(__thiscall*)(void*, void*, void*, void*, void*, int, f
     std::int8_t, float*, std::int32_t*, std::uint16_t);
 using ProcessBikeWheel = void(__thiscall*)(void*, void*, void*, void*, void*, int, float, float, float, float,
     std::int8_t, float*, std::int32_t*, std::int32_t, std::uint16_t);
+using FlyingControl = void(__thiscall*)(void*, int, float, float, float, float);
+using ProcessBoatControl = void(__thiscall*)(void*, const void*, float*, bool, bool);
 using SpringCollision = bool(__thiscall*)(void*, float, void*, void*, float, float, float*);
 using SpringCollisionAlt = bool(__thiscall*)(void*, float, void*, void*, float, float, void*, float*);
 using SpringDamping = bool(__thiscall*)(void*, float, float, void*, void*, void*);
@@ -168,6 +173,14 @@ struct AirObservation {
     bool observed{};
 };
 std::array<AirObservation, 2> s_AirPatrols{};
+struct FlightGround {
+    int vehicle{-1};
+    std::uint32_t time{};
+    ulw::Point position{};
+    float height{};
+    bool found{};
+};
+FlightGround s_FlightGround{};
 std::filesystem::path s_LogPath;
 std::array<unsigned, 4> s_Reactions{};
 std::array<unsigned, 6> s_SearchStages{};
@@ -207,6 +220,9 @@ unsigned s_CrashCalls{};
 unsigned s_SurfaceResponses{};
 unsigned s_SpringResponses{};
 unsigned s_DriveResponses{};
+unsigned s_PlaneResponses{};
+unsigned s_HelicopterResponses{};
+unsigned s_BoatResponses{};
 unsigned s_AllocationFailures{};
 std::uint32_t s_LastLogTime{};
 std::uint32_t s_LastGameTime{};
@@ -292,6 +308,9 @@ void LogActivity(std::uint32_t now) noexcept {
     std::snprintf(message, sizeof(message), "surfaceResponses=%u springResponses=%u driveResponses=%u",
         s_SurfaceResponses, s_SpringResponses, s_DriveResponses);
     Log(message);
+    std::snprintf(message, sizeof(message), "planeResponses=%u helicopterResponses=%u boatResponses=%u",
+        s_PlaneResponses, s_HelicopterResponses, s_BoatResponses);
+    Log(message);
     std::snprintf(message, sizeof(message), "coverHolds=%u coverPeeks=%u tacticalWithdrawals=%u allyWaits=%u gangCasualties=%u",
         s_CoverHolds, s_CoverPeeks, s_Withdrawals, s_AllyWaits, s_GangCasualties);
     Log(message);
@@ -371,6 +390,7 @@ void ClearStreetMemory() noexcept {
     s_TrafficHorns.Reset();
     s_Roadblocks.Reset();
     s_AirPatrols = {};
+    s_FlightGround = {};
     s_RoadPhysics.Reset();
     s_Crashes.Reset();
     s_CrashWitnesses.Reset();
@@ -2067,6 +2087,130 @@ float __fastcall OnDriveAcceleration(void* transmission, void*, const float* gas
     return acceleration;
 }
 
+int PlayerTransport(const void* vehicle, std::uint32_t now) noexcept {
+    if (Read<std::uint8_t>(vehicle, 0x2F) != 0 || (Read<std::uint8_t>(vehicle, 0x36) >> 3) != 0 ||
+        Read<std::int8_t>(vehicle, 0x424) >= 0 || Read<std::uint8_t>(vehicle, 0x4A4) == 2 ||
+        !(Read<float>(vehicle, 0x4C0) >= 300.0f) || !IsPlayerPed(Read<const void*>(vehicle, 0x460)) ||
+        !GameValue<void*>(VehiclePool) || GameValue<std::int32_t>(0xB72914) != 0 || !StreetActive(now)) {
+        return -1;
+    }
+    const auto reference = GameFunction<PedReference>(0x54FFC0)(vehicle);
+    return reference >= 0 && !(reference & 0x80) ? reference : -1;
+}
+
+float FlightClearance(int reference, std::uint32_t now, ulw::Point position) noexcept {
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
+        return -1.0f;
+    }
+    const auto& last = s_FlightGround.position;
+    const ulw::Point horizontal{position.x, position.y, last.z};
+    if (reference != s_FlightGround.vehicle || now - s_FlightGround.time >= 250 ||
+        ulw::DistanceSquared(last, horizontal) >= 256.0f || std::abs(position.z - last.z) >= 10.0f) {
+        auto probe = position;
+        probe.z += 1.5f;
+        bool found{};
+        const auto height = GameFunction<GroundHeight>(0x5696C0)(probe, &found, nullptr);
+        s_FlightGround = {reference, now, position, height, found && std::isfinite(height)};
+    }
+    return s_FlightGround.found ? std::max(0.0f, position.z - s_FlightGround.height) : -1.0f;
+}
+
+struct FlightHandling {
+    std::int32_t id;
+    float thrust;
+    float thrustFallOff;
+    float yaw;
+    float yawStability;
+    float sideSlip;
+    float roll;
+    float rollStability;
+    float pitch;
+    std::array<float, 13> nativeFields;
+};
+static_assert(sizeof(FlightHandling) == 0x58 && offsetof(FlightHandling, pitch) == 0x20);
+
+void __fastcall OnFlyingControl(void* aircraft, void*, int flightModel, float rudder, float elevator, float aileron,
+    float throttle) noexcept {
+    const auto native = GameFunction<FlyingControl>(NativeFlight);
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    const auto type = Read<std::int32_t>(aircraft, 0x594);
+    const auto* const original = Read<const FlightHandling*>(aircraft, FlightHandlingOffset);
+    // A Hydra in hover uses the helicopter solver with a different native handling profile.
+    const auto helicopter = type == 3 && flightModel == 6;
+    const auto plane = type == 4 && flightModel == 3;
+    if ((!plane && !helicopter) || !original || (Read<std::uint32_t>(aircraft, 0x40) & 0x300u)) {
+        return native(aircraft, flightModel, rudder, elevator, aileron, throttle);
+    }
+    const auto reference = PlayerTransport(aircraft, now);
+    if (reference < 0) {
+        return native(aircraft, flightModel, rudder, elevator, aileron, throttle);
+    }
+    const auto position = EntityPosition(aircraft);
+    const auto forwardSpeed = Dot(Read<ulw::Point>(aircraft, 0x44), EntityForward(aircraft));
+    const auto clearance = FlightClearance(reference, now, position);
+    const auto wheels = Read<std::array<float, 4>>(aircraft, 0x7D4);
+    const auto grounded = std::any_of(wheels.begin(), wheels.end(), [](float travel) {
+        return travel >= 0.0f && travel < 0.98f;
+    });
+    const auto model = Read<std::uint16_t>(aircraft, 0x22);
+    const auto tune = ulw::TuneFlight(ulw::ClassifyAircraft(model, helicopter), forwardSpeed, position.z, clearance, grounded);
+    if (tune.yaw != 1.0f || tune.roll != 1.0f || tune.pitch != 1.0f || tune.sideSlip != 1.0f || tune.thrust != 1.0f) {
+        auto adjusted = Read<FlightHandling>(original);
+        adjusted.yaw *= tune.yaw;
+        adjusted.roll *= tune.roll;
+        adjusted.pitch *= tune.pitch;
+        adjusted.sideSlip *= tune.sideSlip;
+        adjusted.thrust *= tune.thrust;
+        // The native solver reads the handling pointer synchronously. Restore
+        // the shared profile before returning to the vehicle controller.
+        const FlightHandling* profile = &adjusted;
+        auto* const slot = static_cast<std::byte*>(aircraft) + FlightHandlingOffset;
+        std::memcpy(slot, &profile, sizeof(profile));
+        native(aircraft, flightModel, rudder, elevator, aileron, throttle);
+        std::memcpy(slot, &original, sizeof(original));
+        ++(helicopter ? s_HelicopterResponses : s_PlaneResponses);
+        LogActivity(now);
+        return;
+    }
+    native(aircraft, flightModel, rudder, elevator, aileron, throttle);
+}
+
+struct BoatHandling {
+    std::array<std::uint32_t, 4> thrustGeometry;
+    float planingForce;
+    std::array<float, 4> nativeFields;
+    ulw::Point movementResistance;
+    ulw::Point turnResistance;
+};
+static_assert(sizeof(BoatHandling) == 0x3C && offsetof(BoatHandling, movementResistance) == 0x24);
+
+void __fastcall OnBoatControl(void* boat, void*, const BoatHandling* handling, float* immersion,
+    bool collided, bool postCollision) noexcept {
+    const auto native = GameFunction<ProcessBoatControl>(NativeBoat);
+    const auto now = GameValue<std::uint32_t>(0xB7CB84);
+    const auto model = Read<std::uint16_t>(boat, 0x22);
+    if (!handling || !immersion || collided || postCollision || model == 460 || model == 539 ||
+        Read<std::int32_t>(boat, 0x594) != 5 || !(Read<std::uint32_t>(boat, 0x40) & 0x100u) ||
+        GameValue<std::uint8_t>(0x969153) || PlayerTransport(boat, now) < 0) {
+        return native(boat, handling, immersion, collided, postCollision);
+    }
+    const auto speed = Read<ulw::Point>(boat, 0x44);
+    const auto tune = ulw::TuneHull(ulw::ClassifyHull(model), Dot(speed, EntityForward(boat)), *immersion,
+        speed.z, Read<float>(boat, 0x49C));
+    if (tune.longitudinalDrag != 1.0f || tune.lateralDrag != 1.0f || tune.yawDrag != 1.0f || tune.planing != 1.0f) {
+        auto adjusted = Read<BoatHandling>(handling);
+        adjusted.movementResistance.x = ulw::TuneResistance(adjusted.movementResistance.x, tune.lateralDrag);
+        adjusted.movementResistance.y = ulw::TuneResistance(adjusted.movementResistance.y, tune.longitudinalDrag);
+        adjusted.turnResistance.z = ulw::TuneResistance(adjusted.turnResistance.z, tune.yawDrag);
+        adjusted.planingForce *= tune.planing;
+        native(boat, &adjusted, immersion, collided, postCollision);
+        ++s_BoatResponses;
+        LogActivity(now);
+        return;
+    }
+    native(boat, handling, immersion, collided, postCollision);
+}
+
 bool CivilianActive(std::uint32_t now) noexcept {
     if (!FreeRoam()) {
         if (s_WasActive) {
@@ -2473,6 +2617,30 @@ void InstallRoadDynamics() noexcept {
     Log(drive ? "Installed: class-specific throttle and shift points." : "Skipped: transmission call site differs.");
 }
 
+void InstallAirAndWaterDynamics() noexcept {
+    const bool queries = VehicleQueriesMatch();
+    const bool air = queries &&
+        Matches(NativeFlight, Entry{0x90, 0xE9, 0xF2, 0xB6, 0xD2, 0xFF, 0x53, 0x55}) &&
+        Matches(0x403CE8, Entry{0x81, 0xEC, 0x50, 0x02, 0, 0, 0xE9, 0x03}) &&
+        Matches(0x5696C0, Entry{0x83, 0xEC, 0x38, 0x8B, 0x44, 0x24, 0x3C, 0x8B});
+    const bool planes = air &&
+        Matches(0x6CC475, std::array<std::uint8_t, 6>{0x50, 0x51, 0x6A, 0x03, 0x8B, 0xCE}) &&
+        PatchCalls({0x6CC47B}, NativeFlight, reinterpret_cast<std::uintptr_t>(&OnFlyingControl));
+    const bool helicopters = air &&
+        Matches(0x6C5012, std::array<std::uint8_t, 6>{0x51, 0x52, 0x6A, 0x06, 0x8B, 0xCE}) &&
+        PatchCalls({0x6C5018}, NativeFlight, reinterpret_cast<std::uintptr_t>(&OnFlyingControl));
+    const bool boats = queries &&
+        Matches(NativeBoat, Entry{0x6A, 0xFF, 0x68, 0xE3, 0x87, 0x84, 0x00, 0x64}) &&
+        Matches(0x6F1F4C, std::array<std::uint8_t, 10>{0x8D, 0x96, 0x40, 0x06, 0, 0, 0x52, 0x50, 0x8B, 0xCE}) &&
+        PatchCalls({0x6F1F56}, NativeBoat, reinterpret_cast<std::uintptr_t>(&OnBoatControl));
+    Log(planes ? "Installed: fixed-wing flight handling."
+        : "Skipped: fixed-wing flight call site differs.");
+    Log(helicopters ? "Installed: helicopter flight handling."
+        : "Skipped: helicopter flight call site differs.");
+    Log(boats ? "Installed: boat hull resistance and planing."
+        : "Skipped: boat physics call site differs.");
+}
+
 void InstallCombat() noexcept {
     const bool aiming = Matches(0x742300, Entry{0x83, 0xEC, 0x3C, 0x53, 0x56, 0x57, 0x8B, 0xF1}) &&
         Matches(0x73FBFD, std::array<std::uint8_t, 7>{0x0F, 0xB6, 0x97, 0x1A, 0x07, 0, 0}) &&
@@ -2582,7 +2750,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log("Skipped: could not pin the module.");
         return;
     }
-    Log("Ultimate Living World 0.16.0");
+    Log("Ultimate Living World 0.17.0");
     s_MissionObserver = InstallMissionObserver();
     Log(s_MissionObserver ? "Installed: mission lifecycle protection and diagnostics."
         : "Skipped: mission observer differs. Native mission flags still protect the campaign.");
@@ -2632,6 +2800,7 @@ void Install(const std::filesystem::path& config) noexcept {
         Log(InstallPhysics() ? "Installed: automobile grip, damage and heat." : "Skipped: automobile wheel call sites differ.");
         Log(InstallMotorcyclePhysics() ? "Installed: motorcycle grip and heat." : "Skipped: motorcycle wheel call sites differ.");
         InstallRoadDynamics();
+        InstallAirAndWaterDynamics();
     }
     if (GetPrivateProfileIntW(L"Modules", L"Combat", 1, config.c_str())) {
         InstallCombat();
